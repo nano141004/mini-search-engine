@@ -61,7 +61,8 @@ def eval(qrels, query_file = "queries.txt", k = 1000):
   """
   BSBI_instance = BSBIIndex(data_dir = 'collection', \
                           postings_encoding = VBEPostings, \
-                          output_dir = 'index')
+                          output_dir = 'index', \
+                          tmp_dir = 'tmp')
 
   with open(query_file) as file:
     rbp_scores = []

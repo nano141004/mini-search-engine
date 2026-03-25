@@ -5,7 +5,8 @@ from compression import VBEPostings
 # BSBIIndex serves only as an abstraction for that index
 BSBI_instance = BSBIIndex(data_dir = 'collection', \
                           postings_encoding = VBEPostings, \
-                          output_dir = 'index')
+                          output_dir = 'index', \
+                          tmp_dir = 'tmp')
 
 queries = ["alkylated with radioactive iodoacetate", \
            "psychodrama for disturbed children", \

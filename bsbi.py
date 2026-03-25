@@ -18,16 +18,18 @@ class BSBIIndex:
     doc_id_map(IdMap): For mapping relative paths of documents (e.g.,
                     /collection/0/gamma.txt) to docIDs
     data_dir(str): Path to data
-    output_dir(str): Path to output index files
+    output_dir(str): Path to output final index files
+    tmp_dir(str): Path to output intermediate index files
     postings_encoding: See compression.py, candidates are StandardPostings,
                     VBEPostings, etc.
     index_name(str): Name of the file containing the inverted index
     """
-    def __init__(self, data_dir, output_dir, postings_encoding, index_name = "main_index"):
+    def __init__(self, data_dir, output_dir, postings_encoding, index_name = "main_index", tmp_dir = "tmp"):
         self.term_id_map = IdMap()
         self.doc_id_map = IdMap()
         self.data_dir = data_dir
         self.output_dir = output_dir
+        self.tmp_dir = tmp_dir
         self.index_name = index_name
         self.postings_encoding = postings_encoding
 
@@ -228,21 +230,27 @@ class BSBIIndex:
         This method scans all data in the collection, calls parse_block
         to parse documents, and calls invert_write which performs inversion
         on each block and saves it to a new index.
+
+        Intermediate indices are written to tmp_dir, while the final
+        merged index and dictionaries are saved to output_dir.
         """
+        os.makedirs(self.tmp_dir, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
+
         # loop for each sub-directory in the collection folder (each block)
         for block_dir_relative in tqdm(sorted(next(os.walk(self.data_dir))[1])):
             td_pairs = self.parse_block(block_dir_relative)
             index_id = 'intermediate_index_'+block_dir_relative
             self.intermediate_indices.append(index_id)
-            with InvertedIndexWriter(index_id, self.postings_encoding, directory = self.output_dir) as index:
+            with InvertedIndexWriter(index_id, self.postings_encoding, directory = self.tmp_dir) as index:
                 self.invert_write(td_pairs, index)
                 td_pairs = None
-    
+
         self.save()
 
         with InvertedIndexWriter(self.index_name, self.postings_encoding, directory = self.output_dir) as merged_index:
             with contextlib.ExitStack() as stack:
-                indices = [stack.enter_context(InvertedIndexReader(index_id, self.postings_encoding, directory=self.output_dir))
+                indices = [stack.enter_context(InvertedIndexReader(index_id, self.postings_encoding, directory=self.tmp_dir))
                                for index_id in self.intermediate_indices]
                 self.merge(indices, merged_index)
 
@@ -251,5 +259,6 @@ if __name__ == "__main__":
 
     BSBI_instance = BSBIIndex(data_dir = 'collection', \
                               postings_encoding = VBEPostings, \
-                              output_dir = 'index')
+                              output_dir = 'index', \
+                              tmp_dir = 'tmp')
     BSBI_instance.index() # start indexing!
