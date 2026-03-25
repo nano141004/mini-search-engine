@@ -1,8 +1,8 @@
 from bsbi import BSBIIndex
 from compression import VBEPostings
 
-# sebelumnya sudah dilakukan indexing
-# BSBIIndex hanya sebagai abstraksi untuk index tersebut
+# indexing has been performed previously
+# BSBIIndex serves only as an abstraction for that index
 BSBI_instance = BSBIIndex(data_dir = 'collection', \
                           postings_encoding = VBEPostings, \
                           output_dir = 'index')

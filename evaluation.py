@@ -2,25 +2,25 @@ import re
 from bsbi import BSBIIndex
 from compression import VBEPostings
 
-######## >>>>> sebuah IR metric: RBP p = 0.8
+######## >>>>> an IR metric: RBP p = 0.8
 
 def rbp(ranking, p = 0.8):
-  """ menghitung search effectiveness metric score dengan 
+  """ Calculate search effectiveness metric score using
       Rank Biased Precision (RBP)
 
       Parameters
       ----------
       ranking: List[int]
-         vektor biner seperti [1, 0, 1, 1, 1, 0]
-         gold standard relevansi dari dokumen di rank 1, 2, 3, dst.
-         Contoh: [1, 0, 1, 1, 1, 0] berarti dokumen di rank-1 relevan,
-                 di rank-2 tidak relevan, di rank-3,4,5 relevan, dan
-                 di rank-6 tidak relevan
-        
+         binary vector such as [1, 0, 1, 1, 1, 0]
+         gold standard relevance of documents at rank 1, 2, 3, etc.
+         Example: [1, 0, 1, 1, 1, 0] means the document at rank-1 is relevant,
+                  at rank-2 not relevant, at rank-3,4,5 relevant, and
+                  at rank-6 not relevant
+
       Returns
       -------
       Float
-        score RBP
+        RBP score
   """
   score = 0.
   for i in range(1, len(ranking)):
@@ -29,16 +29,16 @@ def rbp(ranking, p = 0.8):
   return (1 - p) * score
 
 
-######## >>>>> memuat qrels
+######## >>>>> loading qrels
 
 def load_qrels(qrel_file = "qrels.txt", max_q_id = 30, max_doc_id = 1033):
-  """ memuat query relevance judgment (qrels) 
-      dalam format dictionary of dictionary
+  """ Load query relevance judgments (qrels)
+      in the format of dictionary of dictionary
       qrels[query id][document id]
 
-      dimana, misal, qrels["Q3"][12] = 1 artinya Doc 12
-      relevan dengan Q3; dan qrels["Q3"][10] = 0 artinya
-      Doc 10 tidak relevan dengan Q3.
+      where, for example, qrels["Q3"][12] = 1 means Doc 12
+      is relevant to Q3; and qrels["Q3"][10] = 0 means
+      Doc 10 is not relevant to Q3.
 
   """
   qrels = {"Q" + str(i) : {i:0 for i in range(1, max_doc_id + 1)} \
@@ -51,13 +51,13 @@ def load_qrels(qrel_file = "qrels.txt", max_q_id = 30, max_doc_id = 1033):
       qrels[qid][did] = 1
   return qrels
 
-######## >>>>> EVALUASI !
+######## >>>>> EVALUATION !
 
 def eval(qrels, query_file = "queries.txt", k = 1000):
-  """ 
-    loop ke semua 30 query, hitung score di setiap query,
-    lalu hitung MEAN SCORE over those 30 queries.
-    untuk setiap query, kembalikan top-1000 documents
+  """
+    Loop over all 30 queries, compute the score for each query,
+    then compute the MEAN SCORE over those 30 queries.
+    For each query, return the top-1000 documents.
   """
   BSBI_instance = BSBIIndex(data_dir = 'collection', \
                           postings_encoding = VBEPostings, \
@@ -70,21 +70,21 @@ def eval(qrels, query_file = "queries.txt", k = 1000):
       qid = parts[0]
       query = " ".join(parts[1:])
 
-      # HATI-HATI, doc id saat indexing bisa jadi berbeda dengan doc id
-      # yang tertera di qrels
+      # BE CAREFUL, the doc id during indexing may differ from the doc id
+      # listed in qrels
       ranking = []
       for (score, doc) in BSBI_instance.retrieve_tfidf(query, k = k):
           did = int(re.search(r'\/.*\/.*\/(.*)\.txt', doc).group(1))
           ranking.append(qrels[qid][did])
       rbp_scores.append(rbp(ranking))
 
-  print("Hasil evaluasi TF-IDF terhadap 30 queries")
+  print("TF-IDF evaluation results over 30 queries")
   print("RBP score =", sum(rbp_scores) / len(rbp_scores))
 
 if __name__ == '__main__':
   qrels = load_qrels()
 
-  assert qrels["Q1"][166] == 1, "qrels salah"
-  assert qrels["Q1"][300] == 0, "qrels salah"
+  assert qrels["Q1"][166] == 1, "qrels incorrect"
+  assert qrels["Q1"][300] == 0, "qrels incorrect"
 
   eval(qrels)
