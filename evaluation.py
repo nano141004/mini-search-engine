@@ -1,6 +1,7 @@
+import os
 import re
 from bsbi import BSBIIndex
-from compression import VBEPostings
+from compression import VBEPostings, EliasGammaPostings
 
 ######## >>>>> an IR metric: RBP p = 0.8
 
@@ -53,16 +54,27 @@ def load_qrels(qrel_file = "qrels.txt", max_q_id = 30, max_doc_id = 1033):
 
 ######## >>>>> EVALUATION !
 
-def eval(qrels, query_file = "queries.txt", k = 1000):
+def eval(qrels, postings_encoding = VBEPostings, query_file = "queries.txt", k = 1000):
   """
     Loop over all 30 queries, compute the score for each query,
     then compute the MEAN SCORE over those 30 queries.
     For each query, return the top-1000 documents.
+
+    Parameters
+    ----------
+    qrels : dict
+        Query relevance judgments as loaded by load_qrels()
+    postings_encoding : class
+        Postings encoding class (e.g., VBEPostings, EliasGammaPostings)
+    query_file : str
+        Path to the file containing queries
+    k : int
+        Number of top documents to retrieve per query
   """
   BSBI_instance = BSBIIndex(data_dir = 'collection', \
-                          postings_encoding = VBEPostings, \
-                          output_dir = 'index', \
-                          tmp_dir = 'tmp')
+                          postings_encoding = postings_encoding, \
+                          output_dir = os.path.join('index', postings_encoding.name), \
+                          tmp_dir = os.path.join('tmp', postings_encoding.name))
 
   with open(query_file) as file:
     rbp_scores = []
@@ -88,4 +100,6 @@ if __name__ == '__main__':
   assert qrels["Q1"][166] == 1, "qrels incorrect"
   assert qrels["Q1"][300] == 0, "qrels incorrect"
 
-  eval(qrels)
+  for postings_encoding in [VBEPostings, EliasGammaPostings]:
+    print(f"\n===== Evaluation using {postings_encoding.__name__} =====")
+    eval(qrels, postings_encoding)

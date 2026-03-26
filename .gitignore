@@ -1,2 +1,6 @@
 __pycache__/
 
+index/**
+!index/.gitkeep
+tmp/**
+!tmp/.gitkeep
