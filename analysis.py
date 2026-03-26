@@ -40,6 +40,7 @@ CONFIGURATIONS = [
 def get_bsbi_instance(config):
     """
     Create a BSBIIndex instance from a configuration dict.
+    If the index does not exist yet, it will be built automatically.
 
     Parameters
     ----------
@@ -49,15 +50,23 @@ def get_bsbi_instance(config):
     Returns
     -------
     BSBIIndex
-        A configured BSBIIndex instance
+        A configured BSBIIndex instance (with index built if needed)
     """
     enc = config["postings_encoding"]
-    return BSBIIndex(
+    bsbi = BSBIIndex(
         data_dir="collection",
         postings_encoding=enc,
         output_dir=os.path.join("index", enc.name),
         tmp_dir=os.path.join("tmp", enc.name),
     )
+
+    # Build the index if it doesn't exist yet
+    index_file = os.path.join("index", enc.name, "main_index.index")
+    if not os.path.exists(index_file):
+        print(f"  Index not found for {enc.name}, building...")
+        bsbi.index()
+
+    return bsbi
 
 def retrieve(bsbi_instance, query, scoring, k=10):
     """
