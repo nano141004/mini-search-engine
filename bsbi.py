@@ -4,6 +4,7 @@ import contextlib
 import heapq
 import time
 import math
+from collections import Counter
 
 from index import InvertedIndexReader, InvertedIndexWriter
 from util import IdMap, sorted_merge_posts_and_tfs
@@ -36,6 +37,9 @@ class BSBIIndex:
         # To store the filenames of all intermediate inverted indices
         self.intermediate_indices = []
 
+        # Pre-computed average document length for BM25
+        self.avdl = None
+
     def save(self):
         """Save doc_id_map and term_id_map to the output directory via pickle"""
 
@@ -45,12 +49,23 @@ class BSBIIndex:
             pickle.dump(self.doc_id_map, f)
 
     def load(self):
-        """Load doc_id_map and term_id_map from the output directory"""
+        """Load doc_id_map, term_id_map, and avdl from the output directory"""
 
         with open(os.path.join(self.output_dir, 'terms.dict'), 'rb') as f:
             self.term_id_map = pickle.load(f)
         with open(os.path.join(self.output_dir, 'docs.dict'), 'rb') as f:
             self.doc_id_map = pickle.load(f)
+        avdl_path = os.path.join(self.output_dir, 'avdl.pkl')
+        if os.path.exists(avdl_path):
+            with open(avdl_path, 'rb') as f:
+                self.avdl = pickle.load(f)
+        else:
+            # fallback - compute from index metadata if avdl.pkl hasn't been generated yet
+            with InvertedIndexReader(self.index_name, self.postings_encoding, directory=self.output_dir) as reader:
+                self.avdl = sum(reader.doc_length.values()) / len(reader.doc_length)
+            # save it
+            with open(avdl_path, 'wb') as f:
+                pickle.dump(self.avdl, f)
 
     def parse_block(self, block_dir_relative):
         """
@@ -221,6 +236,148 @@ class BSBIIndex:
             docs = [(score, self.doc_id_map[doc_id]) for (doc_id, score) in scores.items()]
             return sorted(docs, key = lambda x: x[0], reverse = True)[:k]
 
+    def retrieve_bm25(self, query, k=10, k1=1.2, b=0.75):
+        """
+        Okapi BM25 scoring.
+
+        RSV = Σ_{t∈Q∩D} log(N/df_t) · (k1+1)·tf_t / (k1·((1-b) + b·dl/avdl) + tf_t)
+
+        Parameters
+        ----------
+        query: str
+            Query tokens separated by spaces
+        k1: float
+            Term frequency saturation parameter (default 1.2)
+        b: float
+            Document length normalization parameter (default 0.75)
+
+        Result
+        ------
+        List[(float, str)]
+            Top-K documents sorted in descending order by score
+        """
+        if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
+            self.load()
+
+        terms = [self.term_id_map[word] for word in query.split()]
+        with InvertedIndexReader(self.index_name, self.postings_encoding, directory=self.output_dir) as merged_index:
+            N = len(merged_index.doc_length)
+            avdl = self.avdl
+
+            scores = {}
+            for term in terms:
+                if term in merged_index.postings_dict:
+                    df = merged_index.postings_dict[term][1]
+                    postings, tf_list = merged_index.get_postings_list(term)
+                    idf = math.log(N / df)
+                    for i in range(len(postings)):
+                        doc_id, tf = postings[i], tf_list[i]
+                        dl = merged_index.doc_length[doc_id]
+                        tf_norm = ((k1 + 1) * tf) / (k1 * ((1 - b) + b * dl / avdl) + tf)
+                        if doc_id not in scores:
+                            scores[doc_id] = 0
+                        scores[doc_id] += idf * tf_norm
+
+            docs = [(score, self.doc_id_map[doc_id]) for (doc_id, score) in scores.items()]
+            return sorted(docs, key=lambda x: x[0], reverse=True)[:k]
+
+    def retrieve_bm25_alt2(self, query, k=10, k1=1.2, b=0.75):
+        """
+        BM25 Alternative 2 — uses alternative IDF.
+
+        RSV = Σ_{t∈Q∩D} log((N-df_t+0.5)/(df_t+0.5)) · (k1+1)·tf_t / (k1·((1-b)+b·dl/avdl)+tf_t)
+
+        Parameters
+        ----------
+        query: str
+            Query tokens separated by spaces
+        k1: float
+            Term frequency saturation parameter (default 1.2)
+        b: float
+            Document length normalization parameter (default 0.75)
+
+        Result
+        ------
+        List[(float, str)]
+            Top-K documents sorted in descending order by score
+        """
+        if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
+            self.load()
+
+        terms = [self.term_id_map[word] for word in query.split()]
+        with InvertedIndexReader(self.index_name, self.postings_encoding, directory=self.output_dir) as merged_index:
+            N = len(merged_index.doc_length)
+            avdl = self.avdl
+
+            scores = {}
+            for term in terms:
+                if term in merged_index.postings_dict:
+                    df = merged_index.postings_dict[term][1]
+                    postings, tf_list = merged_index.get_postings_list(term)
+                    idf = math.log((N - df + 0.5) / (df + 0.5))
+                    for i in range(len(postings)):
+                        doc_id, tf = postings[i], tf_list[i]
+                        dl = merged_index.doc_length[doc_id]
+                        tf_norm = ((k1 + 1) * tf) / (k1 * ((1 - b) + b * dl / avdl) + tf)
+                        if doc_id not in scores:
+                            scores[doc_id] = 0
+                        scores[doc_id] += idf * tf_norm
+
+            docs = [(score, self.doc_id_map[doc_id]) for (doc_id, score) in scores.items()]
+            return sorted(docs, key=lambda x: x[0], reverse=True)[:k]
+
+    def retrieve_bm25_alt3(self, query, k=10, k1=1.2, b=0.75, k2=100):
+        """
+        BM25 Alternative 3 — adds query term frequency scaling.
+
+        RSV = Σ_{t∈Q∩D} log(N/df_t) · (k1+1)·tf(t,d) / (k1·((1-b)+b·dl/avdl)+tf(t,d))
+                                      · (k2+1)·tf(t,Q) / (k2+tf(t,Q))
+
+        Parameters
+        ----------
+        query: str
+            Query tokens separated by spaces
+        k1: float
+            Term frequency saturation parameter (default 1.2)
+        b: float
+            Document length normalization parameter (default 0.75)
+        k2: float
+            Query term frequency saturation parameter (default 100)
+
+        Result
+        ------
+        List[(float, str)]
+            Top-K documents sorted in descending order by score
+        """
+        if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
+            self.load()
+
+        terms = [self.term_id_map[word] for word in query.split()]
+        query_tf = Counter(terms)
+
+        with InvertedIndexReader(self.index_name, self.postings_encoding, directory=self.output_dir) as merged_index:
+            N = len(merged_index.doc_length)
+            avdl = self.avdl
+
+            scores = {}
+            for term in terms:
+                if term in merged_index.postings_dict:
+                    df = merged_index.postings_dict[term][1]
+                    postings, tf_list = merged_index.get_postings_list(term)
+                    idf = math.log(N / df)
+                    qtf = query_tf[term]
+                    qtf_scale = ((k2 + 1) * qtf) / (k2 + qtf)
+                    for i in range(len(postings)):
+                        doc_id, tf = postings[i], tf_list[i]
+                        dl = merged_index.doc_length[doc_id]
+                        tf_norm = ((k1 + 1) * tf) / (k1 * ((1 - b) + b * dl / avdl) + tf)
+                        if doc_id not in scores:
+                            scores[doc_id] = 0
+                        scores[doc_id] += idf * tf_norm * qtf_scale
+
+            docs = [(score, self.doc_id_map[doc_id]) for (doc_id, score) in scores.items()]
+            return sorted(docs, key=lambda x: x[0], reverse=True)[:k]
+
     def index(self):
         """
         Base indexing code
@@ -253,6 +410,11 @@ class BSBIIndex:
                 indices = [stack.enter_context(InvertedIndexReader(index_id, self.postings_encoding, directory=self.tmp_dir))
                                for index_id in self.intermediate_indices]
                 self.merge(indices, merged_index)
+
+            # Pre-compute and save average document length for BM25
+            self.avdl = sum(merged_index.doc_length.values()) / len(merged_index.doc_length)
+            with open(os.path.join(self.output_dir, 'avdl.pkl'), 'wb') as f:
+                pickle.dump(self.avdl, f)
 
 
 if __name__ == "__main__":

@@ -54,7 +54,7 @@ def load_qrels(qrel_file = "qrels.txt", max_q_id = 30, max_doc_id = 1033):
 
 ######## >>>>> EVALUATION !
 
-def eval(qrels, postings_encoding = VBEPostings, query_file = "queries.txt", k = 1000):
+def eval(qrels, postings_encoding = VBEPostings, scoring = "tfidf", query_file = "queries.txt", k = 1000):
   """
     Loop over all 30 queries, compute the score for each query,
     then compute the MEAN SCORE over those 30 queries.
@@ -66,6 +66,8 @@ def eval(qrels, postings_encoding = VBEPostings, query_file = "queries.txt", k =
         Query relevance judgments as loaded by load_qrels()
     postings_encoding : class
         Postings encoding class (e.g., VBEPostings, EliasGammaPostings)
+    scoring : str
+        Scoring method: "tfidf", "bm25", "bm25_alt2", or "bm25_alt3"
     query_file : str
         Path to the file containing queries
     k : int
@@ -75,6 +77,13 @@ def eval(qrels, postings_encoding = VBEPostings, query_file = "queries.txt", k =
                           postings_encoding = postings_encoding, \
                           output_dir = os.path.join('index', postings_encoding.name), \
                           tmp_dir = os.path.join('tmp', postings_encoding.name))
+
+  retrieve_fn = {
+      "tfidf": BSBI_instance.retrieve_tfidf,
+      "bm25": BSBI_instance.retrieve_bm25,
+      "bm25_alt2": BSBI_instance.retrieve_bm25_alt2,
+      "bm25_alt3": BSBI_instance.retrieve_bm25_alt3,
+  }[scoring]
 
   with open(query_file) as file:
     rbp_scores = []
@@ -86,12 +95,12 @@ def eval(qrels, postings_encoding = VBEPostings, query_file = "queries.txt", k =
       # BE CAREFUL, the doc id during indexing may differ from the doc id
       # listed in qrels
       ranking = []
-      for (score, doc) in BSBI_instance.retrieve_tfidf(query, k = k):
+      for (score, doc) in retrieve_fn(query, k = k):
           did = int(re.search(r'\/.*\/.*\/(.*)\.txt', doc).group(1))
           ranking.append(qrels[qid][did])
       rbp_scores.append(rbp(ranking))
 
-  print("TF-IDF evaluation results over 30 queries")
+  print(f"{scoring.upper()} evaluation results over 30 queries")
   print("RBP score =", sum(rbp_scores) / len(rbp_scores))
 
 if __name__ == '__main__':
@@ -102,4 +111,5 @@ if __name__ == '__main__':
 
   for postings_encoding in [VBEPostings, EliasGammaPostings]:
     print(f"\n===== Evaluation using {postings_encoding.__name__} =====")
-    eval(qrels, postings_encoding)
+    for scoring in ["tfidf", "bm25", "bm25_alt2", "bm25_alt3"]:
+      eval(qrels, postings_encoding, scoring=scoring)

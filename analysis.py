@@ -28,9 +28,39 @@ CONFIGURATIONS = [
         "scoring": "tfidf",
     },
     {
+        "name": "VBE + BM25 Okapi",
+        "postings_encoding": VBEPostings,
+        "scoring": "bm25",
+    },
+    {
+        "name": "VBE + BM25 Alt 2",
+        "postings_encoding": VBEPostings,
+        "scoring": "bm25_alt2",
+    },
+    {
+        "name": "VBE + BM25 Alt 3",
+        "postings_encoding": VBEPostings,
+        "scoring": "bm25_alt3",
+    },
+    {
         "name": "Elias Gamma + TF-IDF",
         "postings_encoding": EliasGammaPostings,
         "scoring": "tfidf",
+    },
+    {
+        "name": "Elias Gamma + BM25 Okapi",
+        "postings_encoding": EliasGammaPostings,
+        "scoring": "bm25",
+    },
+    {
+        "name": "Elias Gamma + BM25 Alt 2",
+        "postings_encoding": EliasGammaPostings,
+        "scoring": "bm25_alt2",
+    },
+    {
+        "name": "Elias Gamma + BM25 Alt 3",
+        "postings_encoding": EliasGammaPostings,
+        "scoring": "bm25_alt3",
     },
 ]
 
@@ -90,9 +120,12 @@ def retrieve(bsbi_instance, query, scoring, k=10):
     """
     if scoring == "tfidf":
         return bsbi_instance.retrieve_tfidf(query, k=k)
-    # --- extend here for new scoring methods ---
-    # elif scoring == "bm25":
-    #     return bsbi_instance.retrieve_bm25(query, k=k)
+    elif scoring == "bm25":
+        return bsbi_instance.retrieve_bm25(query, k=k)
+    elif scoring == "bm25_alt2":
+        return bsbi_instance.retrieve_bm25_alt2(query, k=k)
+    elif scoring == "bm25_alt3":
+        return bsbi_instance.retrieve_bm25_alt3(query, k=k)
     else:
         raise ValueError(f"Unknown scoring method: {scoring}")
 
@@ -170,8 +203,8 @@ def measure_retrieval_speed(config, queries, k=10, n_runs=3):
 
     Returns
     -------
-    float
-        Average time per query in milliseconds
+    tuple(float, float)
+        (average time per query in ms, total time in ms)
     """
     bsbi = get_bsbi_instance(config)
     scoring = config["scoring"]
@@ -190,7 +223,9 @@ def measure_retrieval_speed(config, queries, k=10, n_runs=3):
             total_time += time.perf_counter() - start
             total_queries += 1
 
-    return (total_time / total_queries) * 1000  # ms
+    total_ms = total_time * 1000
+    avg_ms = total_ms / total_queries
+    return avg_ms, total_ms
 
 def compare_retrieval_speed(configs, queries, k=10):
     """
@@ -211,16 +246,18 @@ def compare_retrieval_speed(configs, queries, k=10):
 
     results = []
     for config in configs:
-        avg_ms = measure_retrieval_speed(config, queries, k=k)
-        results.append((config["name"], avg_ms))
+        avg_ms, total_ms = measure_retrieval_speed(config, queries, k=k)
+        results.append((config["name"], avg_ms, total_ms))
 
-    min_ms = min(ms for _, ms in results)
+    min_avg = min(avg for _, avg, _ in results)
+    min_total = min(total for _, _, total in results)
 
-    print(f"  {'Configuration':<30} {'Avg/query':>12} {'Relative':>10}")
-    print(f"  {'-'*30} {'-'*12} {'-'*10}")
-    for name, ms in results:
-        relative = ms / min_ms
-        print(f"  {name:<30} {ms:>9.2f} ms  {relative:>9.2f}x")
+    print(f"  {'Configuration':<30} {'Avg/query':>12} {'Rel Avg':>10} {'Total':>12} {'Rel Total':>10}")
+    print(f"  {'-'*30} {'-'*12} {'-'*10} {'-'*12} {'-'*10}")
+    for name, avg, total in results:
+        rel_avg = avg / min_avg
+        rel_total = total / min_total
+        print(f"  {name:<30} {avg:>9.2f} ms  {rel_avg:>9.2f}x {total:>9.2f} ms  {rel_total:>9.2f}x")
     print()
 
 
