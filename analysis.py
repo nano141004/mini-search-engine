@@ -17,7 +17,7 @@ import time
 
 from bsbi import BSBIIndex
 from compression import VBEPostings, EliasGammaPostings
-from evaluation import load_qrels, rbp
+from evaluation import load_qrels, rbp, dcg, ndcg, ap
 
 
 # list of method configuration to be compared
@@ -289,19 +289,29 @@ def measure_effectiveness(config, qrels, query_file="queries.txt", k=1000):
     metrics = {}
     with open(query_file) as file:
         rbp_scores = []
+        dcg_scores = []
+        ndcg_scores = []
+        ap_scores = []
         for qline in file:
             parts = qline.strip().split()
             qid = parts[0]
             query = " ".join(parts[1:])
+
+            num_relevant = sum(qrels[qid].values())
 
             ranking = []
             for (score, doc) in retrieve(bsbi, query, scoring, k=k):
                 did = int(re.search(r'\/.*\/.*\/(.*)\.txt', doc).group(1))
                 ranking.append(qrels[qid][did])
             rbp_scores.append(rbp(ranking))
+            dcg_scores.append(dcg(ranking))
+            ndcg_scores.append(ndcg(ranking, num_relevant))
+            ap_scores.append(ap(ranking, num_relevant))
 
     metrics["RBP"] = sum(rbp_scores) / len(rbp_scores)
-    # --- extend here for new metrics (NDCG, DCG, AP, etc.) ---
+    metrics["DCG"] = sum(dcg_scores) / len(dcg_scores)
+    metrics["NDCG"] = sum(ndcg_scores) / len(ndcg_scores)
+    metrics["AP"] = sum(ap_scores) / len(ap_scores)
     return metrics
 
 def compare_effectiveness(configs, qrels):

@@ -1,3 +1,4 @@
+import math
 import os
 import re
 from bsbi import BSBIIndex
@@ -24,10 +25,102 @@ def rbp(ranking, p = 0.8):
         RBP score
   """
   score = 0.
-  for i in range(1, len(ranking)):
+  for i in range(1, len(ranking) + 1): #fixed from the base code, cause the len(ranking) is not included means it wasnt checking the last ranked doc before
     pos = i - 1
     score += ranking[pos] * (p ** (i - 1))
   return (1 - p) * score
+
+
+######## >>>>> IR metric: DCG (Discounted Cumulative Gain)
+
+def dcg(ranking):
+  """ Calculate Discounted Cumulative Gain (DCG).
+      Uses the formula from Jarvelin & Kekalainen (Microsoft modified):
+        DCG@K = sum_{i=1}^{K} r_i / log2(i + 1)
+
+      Parameters
+      ----------
+      ranking: List[int]
+         binary relevance vector, e.g. [1, 0, 1, 1, 1, 0]
+
+      Returns
+      -------
+      Float
+        DCG score
+  """
+  score = 0.
+  for i in range(1, len(ranking) + 1):
+    pos = i - 1
+    if ranking[pos] == 1:
+      score += 1.0 / math.log2(i + 1)
+  return score
+
+
+######## >>>>> IR metric: NDCG (Normalized DCG)
+
+def ndcg(ranking, num_relevant):
+  """ Calculate Normalized Discounted Cumulative Gain (NDCG).
+        NDCG@K = DCG@K / IDCG@K
+      where IDCG@K is DCG@K of the ideal ranking (all relevant docs at top).
+
+      Parameters
+      ----------
+      ranking: List[int]
+         binary relevance vector, e.g. [1, 0, 1, 1, 1, 0]
+      num_relevant: int
+         total number of relevant documents in the collection for this query
+
+      Returns
+      -------
+      Float
+        NDCG score (between 0 and 1)
+  """
+  k = len(ranking)
+  dcg_score = dcg(ranking)
+
+  # ideal ranking: min(num_relevant, k) ones at the top, rest zeros
+  ideal_ranking = [1] * min(num_relevant, k) + [0] * max(0, k - num_relevant)
+  idcg_score = dcg(ideal_ranking)
+
+  if idcg_score == 0:
+    return 0.0
+  return dcg_score / idcg_score
+
+
+######## >>>>> IR metric: AP (Average Precision)
+
+def ap(ranking, num_relevant):
+  """ Calculate Average Precision (AP).
+        AP@K = sum_{i=1}^{K} (Prec@i / R) * r_i
+      where R is the total number of relevant documents in the collection,
+      and Prec@i = (# relevant docs in top i) / i.
+
+      Only positions with r_i = 1 contribute to the sum.
+
+      Parameters
+      ----------
+      ranking: List[int]
+         binary relevance vector, e.g. [1, 0, 1, 1, 1, 0]
+      num_relevant: int
+         total number of relevant documents in the collection for this query (R)
+
+      Returns
+      -------
+      Float
+        AP score (between 0 and 1)
+  """
+  if num_relevant == 0:
+    return 0.0
+
+  score = 0.
+  relevant_count = 0
+  for i in range(1, len(ranking) + 1):
+    pos = i - 1
+    if ranking[pos] == 1:
+      relevant_count += 1
+      prec_at_i = relevant_count / i  # Prec@i = (# relevant in top i) / i
+      score += prec_at_i / num_relevant
+  return score
 
 
 ######## >>>>> loading qrels
@@ -87,10 +180,16 @@ def eval(qrels, postings_encoding = VBEPostings, scoring = "tfidf", query_file =
 
   with open(query_file) as file:
     rbp_scores = []
+    dcg_scores = []
+    ndcg_scores = []
+    ap_scores = []
     for qline in file:
       parts = qline.strip().split()
       qid = parts[0]
       query = " ".join(parts[1:])
+
+      # total number of relevant docs for this query (R)
+      num_relevant = sum(qrels[qid].values())
 
       # BE CAREFUL, the doc id during indexing may differ from the doc id
       # listed in qrels
@@ -99,9 +198,15 @@ def eval(qrels, postings_encoding = VBEPostings, scoring = "tfidf", query_file =
           did = int(re.search(r'\/.*\/.*\/(.*)\.txt', doc).group(1))
           ranking.append(qrels[qid][did])
       rbp_scores.append(rbp(ranking))
+      dcg_scores.append(dcg(ranking))
+      ndcg_scores.append(ndcg(ranking, num_relevant))
+      ap_scores.append(ap(ranking, num_relevant))
 
   print(f"{scoring.upper()} evaluation results over 30 queries")
-  print("RBP score =", sum(rbp_scores) / len(rbp_scores))
+  print("RBP score  =", sum(rbp_scores) / len(rbp_scores))
+  print("DCG score  =", sum(dcg_scores) / len(dcg_scores))
+  print("NDCG score =", sum(ndcg_scores) / len(ndcg_scores))
+  print("AP score   =", sum(ap_scores) / len(ap_scores))
 
 if __name__ == '__main__':
   qrels = load_qrels()
