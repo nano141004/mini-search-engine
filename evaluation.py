@@ -176,6 +176,7 @@ def eval(qrels, postings_encoding = VBEPostings, scoring = "tfidf", query_file =
       "bm25": BSBI_instance.retrieve_bm25,
       "bm25_alt2": BSBI_instance.retrieve_bm25_alt2,
       "bm25_alt3": BSBI_instance.retrieve_bm25_alt3,
+      "wand_bm25": BSBI_instance.retrieve_wand_bm25,
   }[scoring]
 
   with open(query_file) as file:
@@ -216,5 +217,5 @@ if __name__ == '__main__':
 
   for postings_encoding in [VBEPostings, EliasGammaPostings]:
     print(f"\n===== Evaluation using {postings_encoding.__name__} =====")
-    for scoring in ["tfidf", "bm25", "bm25_alt2", "bm25_alt3"]:
+    for scoring in ["tfidf", "bm25", "bm25_alt2", "bm25_alt3", "wand_bm25"]:
       eval(qrels, postings_encoding, scoring=scoring)

@@ -19,6 +19,7 @@ for postings_encoding in [VBEPostings, EliasGammaPostings]:
         ("BM25 Okapi", BSBI_instance.retrieve_bm25),
         ("BM25 Alt 2", BSBI_instance.retrieve_bm25_alt2),
         ("BM25 Alt 3", BSBI_instance.retrieve_bm25_alt3),
+        ("WAND BM25", BSBI_instance.retrieve_wand_bm25),
     ]
 
     for scoring_name, retrieve_fn in scoring_methods:

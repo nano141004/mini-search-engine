@@ -32,16 +32,16 @@ CONFIGURATIONS = [
         "postings_encoding": VBEPostings,
         "scoring": "bm25",
     },
-    {
-        "name": "VBE + BM25 Alt 2",
-        "postings_encoding": VBEPostings,
-        "scoring": "bm25_alt2",
-    },
-    {
-        "name": "VBE + BM25 Alt 3",
-        "postings_encoding": VBEPostings,
-        "scoring": "bm25_alt3",
-    },
+    # {
+    #     "name": "VBE + BM25 Alt 2",
+    #     "postings_encoding": VBEPostings,
+    #     "scoring": "bm25_alt2",
+    # },
+    # {
+    #     "name": "VBE + BM25 Alt 3",
+    #     "postings_encoding": VBEPostings,
+    #     "scoring": "bm25_alt3",
+    # },
     {
         "name": "Elias Gamma + TF-IDF",
         "postings_encoding": EliasGammaPostings,
@@ -52,15 +52,25 @@ CONFIGURATIONS = [
         "postings_encoding": EliasGammaPostings,
         "scoring": "bm25",
     },
+    # {
+    #     "name": "Elias Gamma + BM25 Alt 2",
+    #     "postings_encoding": EliasGammaPostings,
+    #     "scoring": "bm25_alt2",
+    # },
+    # {
+    #     "name": "Elias Gamma + BM25 Alt 3",
+    #     "postings_encoding": EliasGammaPostings,
+    #     "scoring": "bm25_alt3",
+    # },
     {
-        "name": "Elias Gamma + BM25 Alt 2",
-        "postings_encoding": EliasGammaPostings,
-        "scoring": "bm25_alt2",
+        "name": "VBE + WAND BM25",
+        "postings_encoding": VBEPostings,
+        "scoring": "wand_bm25",
     },
     {
-        "name": "Elias Gamma + BM25 Alt 3",
+        "name": "Elias Gamma + WAND BM25",
         "postings_encoding": EliasGammaPostings,
-        "scoring": "bm25_alt3",
+        "scoring": "wand_bm25",
     },
 ]
 
@@ -90,13 +100,15 @@ def get_bsbi_instance(config):
         tmp_dir=os.path.join("tmp", enc.name),
     )
 
-    # Build the index if it doesn't exist yet
-    index_file = os.path.join("index", enc.name, "main_index.index")
-    if not os.path.exists(index_file):
-        print(f"  Index not found for {enc.name}, building...")
+    # Rebuild once per encoding (tracked by _built_encodings)
+    if enc.name not in _built_encodings:
+        print(f"  Building index for {enc.name}...")
         bsbi.index()
+        _built_encodings.add(enc.name)
 
     return bsbi
+
+_built_encodings = set()
 
 def retrieve(bsbi_instance, query, scoring, k=10):
     """
@@ -126,6 +138,8 @@ def retrieve(bsbi_instance, query, scoring, k=10):
         return bsbi_instance.retrieve_bm25_alt2(query, k=k)
     elif scoring == "bm25_alt3":
         return bsbi_instance.retrieve_bm25_alt3(query, k=k)
+    elif scoring == "wand_bm25":
+        return bsbi_instance.retrieve_wand_bm25(query, k=k)
     else:
         raise ValueError(f"Unknown scoring method: {scoring}")
 
@@ -147,6 +161,9 @@ def measure_index_size(config):
     int
         Total size in bytes
     """
+    # Ensure index is built
+    get_bsbi_instance(config)
+
     enc = config["postings_encoding"]
     index_dir = os.path.join("index", enc.name)
     total = 0
@@ -209,7 +226,11 @@ def measure_retrieval_speed(config, queries, k=10, n_runs=3):
     bsbi = get_bsbi_instance(config)
     scoring = config["scoring"]
 
-    # warm-up run (load index into memory)
+    # Pre-load all data structures into memory before timing,
+    # so I/O cost is not included in the speed measurement.
+    bsbi.load()
+
+    # warm-up run (prime OS file cache and any lazy state)
     for q in queries:
         retrieve(bsbi, q, scoring, k=k)
 
