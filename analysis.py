@@ -1,8 +1,8 @@
 """
 Comparative analysis of search engine configurations.
 
-Compares different compression methods and scoring/retrieval
-strategies across three dimensions:
+Compares different index construction methods, compression methods,
+and scoring/retrieval strategies across three dimensions:
   1. Index size on disk after indexing
   2. Retrieval speed (latency per query)
   3. Effectiveness (evaluation metrics)
@@ -16,59 +16,84 @@ import re
 import time
 
 from bsbi import BSBIIndex
+from spimi import SPIMIIndex
 from compression import VBEPostings, EliasGammaPostings
 from evaluation import load_qrels, rbp, dcg, ndcg, ap
 
 
 # list of method configuration to be compared
 CONFIGURATIONS = [
+    # BSBI configurations
     {
-        "name": "VBE + TF-IDF",
+        "name": "BSBI + VBE + TF-IDF",
+        "index_method": "bsbi",
         "postings_encoding": VBEPostings,
         "scoring": "tfidf",
     },
     {
-        "name": "VBE + BM25 Okapi",
+        "name": "BSBI + VBE + BM25 Okapi",
+        "index_method": "bsbi",
         "postings_encoding": VBEPostings,
         "scoring": "bm25",
     },
-    # {
-    #     "name": "VBE + BM25 Alt 2",
-    #     "postings_encoding": VBEPostings,
-    #     "scoring": "bm25_alt2",
-    # },
-    # {
-    #     "name": "VBE + BM25 Alt 3",
-    #     "postings_encoding": VBEPostings,
-    #     "scoring": "bm25_alt3",
-    # },
     {
-        "name": "Elias Gamma + TF-IDF",
+        "name": "BSBI + Elias Gamma + TF-IDF",
+        "index_method": "bsbi",
         "postings_encoding": EliasGammaPostings,
         "scoring": "tfidf",
     },
     {
-        "name": "Elias Gamma + BM25 Okapi",
+        "name": "BSBI + Elias Gamma + BM25 Okapi",
+        "index_method": "bsbi",
         "postings_encoding": EliasGammaPostings,
         "scoring": "bm25",
     },
-    # {
-    #     "name": "Elias Gamma + BM25 Alt 2",
-    #     "postings_encoding": EliasGammaPostings,
-    #     "scoring": "bm25_alt2",
-    # },
-    # {
-    #     "name": "Elias Gamma + BM25 Alt 3",
-    #     "postings_encoding": EliasGammaPostings,
-    #     "scoring": "bm25_alt3",
-    # },
     {
-        "name": "VBE + WAND BM25",
+        "name": "BSBI + VBE + WAND BM25",
+        "index_method": "bsbi",
         "postings_encoding": VBEPostings,
         "scoring": "wand_bm25",
     },
     {
-        "name": "Elias Gamma + WAND BM25",
+        "name": "BSBI + Elias Gamma + WAND BM25",
+        "index_method": "bsbi",
+        "postings_encoding": EliasGammaPostings,
+        "scoring": "wand_bm25",
+    },
+    # SPIMI configurations
+    {
+        "name": "SPIMI + VBE + TF-IDF",
+        "index_method": "spimi",
+        "postings_encoding": VBEPostings,
+        "scoring": "tfidf",
+    },
+    {
+        "name": "SPIMI + VBE + BM25 Okapi",
+        "index_method": "spimi",
+        "postings_encoding": VBEPostings,
+        "scoring": "bm25",
+    },
+    {
+        "name": "SPIMI + Elias Gamma + TF-IDF",
+        "index_method": "spimi",
+        "postings_encoding": EliasGammaPostings,
+        "scoring": "tfidf",
+    },
+    {
+        "name": "SPIMI + Elias Gamma + BM25 Okapi",
+        "index_method": "spimi",
+        "postings_encoding": EliasGammaPostings,
+        "scoring": "bm25",
+    },
+    {
+        "name": "SPIMI + VBE + WAND BM25",
+        "index_method": "spimi",
+        "postings_encoding": VBEPostings,
+        "scoring": "wand_bm25",
+    },
+    {
+        "name": "SPIMI + Elias Gamma + WAND BM25",
+        "index_method": "spimi",
         "postings_encoding": EliasGammaPostings,
         "scoring": "wand_bm25",
     },
@@ -77,9 +102,9 @@ CONFIGURATIONS = [
 
 # Helper functions
 
-def get_bsbi_instance(config):
+def get_index_instance(config):
     """
-    Create a BSBIIndex instance from a configuration dict.
+    Create a BSBIIndex or SPIMIIndex instance from a configuration dict.
     If the index does not exist yet, it will be built automatically.
 
     Parameters
@@ -89,34 +114,44 @@ def get_bsbi_instance(config):
 
     Returns
     -------
-    BSBIIndex
-        A configured BSBIIndex instance (with index built if needed)
+    BSBIIndex or SPIMIIndex
+        A configured index instance (with index built if needed)
     """
     enc = config["postings_encoding"]
-    bsbi = BSBIIndex(
-        data_dir="collection",
-        postings_encoding=enc,
-        output_dir=os.path.join("index", enc.name),
-        tmp_dir=os.path.join("tmp", enc.name),
-    )
+    method = config["index_method"]
 
-    # Rebuild once per encoding (tracked by _built_encodings)
-    if enc.name not in _built_encodings:
-        print(f"  Building index for {enc.name}...")
-        bsbi.index()
-        _built_encodings.add(enc.name)
+    if method == "spimi":
+        instance = SPIMIIndex(
+            data_dir="collection",
+            postings_encoding=enc,
+            output_dir=os.path.join("index", "spimi", enc.name),
+            tmp_dir=os.path.join("tmp", "spimi", enc.name),
+        )
+    else:
+        instance = BSBIIndex(
+            data_dir="collection",
+            postings_encoding=enc,
+            output_dir=os.path.join("index", "bsbi", enc.name),
+            tmp_dir=os.path.join("tmp", "bsbi", enc.name),
+        )
 
-    return bsbi
+    build_key = f"{method}_{enc.name}"
+    if build_key not in _built_indices:
+        print(f"  Building index for {method}/{enc.name}...")
+        instance.index()
+        _built_indices.add(build_key)
 
-_built_encodings = set()
+    return instance
 
-def retrieve(bsbi_instance, query, scoring, k=10):
+_built_indices = set()
+
+def retrieve(instance, query, scoring, k=10):
     """
-    Run retrieval on a BSBIIndex instance using the specified scoring method.
+    Run retrieval on an index instance using the specified scoring method.
 
     Parameters
     ----------
-    bsbi_instance : BSBIIndex
+    instance : BSBIIndex or SPIMIIndex
         The index to search
     query : str
         The query string
@@ -131,15 +166,15 @@ def retrieve(bsbi_instance, query, scoring, k=10):
         Top-K results as (score, doc_path) tuples
     """
     if scoring == "tfidf":
-        return bsbi_instance.retrieve_tfidf(query, k=k)
+        return instance.retrieve_tfidf(query, k=k)
     elif scoring == "bm25":
-        return bsbi_instance.retrieve_bm25(query, k=k)
+        return instance.retrieve_bm25(query, k=k)
     elif scoring == "bm25_alt2":
-        return bsbi_instance.retrieve_bm25_alt2(query, k=k)
+        return instance.retrieve_bm25_alt2(query, k=k)
     elif scoring == "bm25_alt3":
-        return bsbi_instance.retrieve_bm25_alt3(query, k=k)
+        return instance.retrieve_bm25_alt3(query, k=k)
     elif scoring == "wand_bm25":
-        return bsbi_instance.retrieve_wand_bm25(query, k=k)
+        return instance.retrieve_wand_bm25(query, k=k)
     else:
         raise ValueError(f"Unknown scoring method: {scoring}")
 
@@ -149,7 +184,7 @@ def retrieve(bsbi_instance, query, scoring, k=10):
 def measure_index_size(config):
     """
     Measure total index size on disk for a configuration.
-    Sums the sizes of all files in the output directory (index/<method>/).
+    Sums the sizes of all files in the output directory.
 
     Parameters
     ----------
@@ -162,10 +197,11 @@ def measure_index_size(config):
         Total size in bytes
     """
     # Ensure index is built
-    get_bsbi_instance(config)
+    get_index_instance(config)
 
     enc = config["postings_encoding"]
-    index_dir = os.path.join("index", enc.name)
+    method = config["index_method"]
+    index_dir = os.path.join("index", method, enc.name)
     total = 0
     for f in os.listdir(index_dir):
         total += os.path.getsize(os.path.join(index_dir, f))
@@ -192,11 +228,11 @@ def compare_index_sizes(configs):
     # find the smallest for relative comparison
     min_size = min(size for _, size in results)
 
-    print(f"  {'Configuration':<30} {'Size':>10} {'Relative':>10}")
-    print(f"  {'-'*30} {'-'*10} {'-'*10}")
+    print(f"  {'Configuration':<40} {'Size':>10} {'Relative':>10}")
+    print(f"  {'-'*40} {'-'*10} {'-'*10}")
     for name, size in results:
         relative = size / min_size
-        print(f"  {name:<30} {size:>8} B  {relative:>9.2f}x")
+        print(f"  {name:<40} {size:>8} B  {relative:>9.2f}x")
     print()
 
 
@@ -223,16 +259,15 @@ def measure_retrieval_speed(config, queries, k=10, n_runs=3):
     tuple(float, float)
         (average time per query in ms, total time in ms)
     """
-    bsbi = get_bsbi_instance(config)
+    instance = get_index_instance(config)
     scoring = config["scoring"]
 
-    # Pre-load all data structures into memory before timing,
-    # so I/O cost is not included in the speed measurement.
-    bsbi.load()
+    # Pre-load all data structures into memory before timing
+    instance.load()
 
-    # warm-up run (prime OS file cache and any lazy state)
+    # warm-up run
     for q in queries:
-        retrieve(bsbi, q, scoring, k=k)
+        retrieve(instance, q, scoring, k=k)
 
     # timed runs
     total_time = 0.0
@@ -240,7 +275,7 @@ def measure_retrieval_speed(config, queries, k=10, n_runs=3):
     for _ in range(n_runs):
         for q in queries:
             start = time.perf_counter()
-            retrieve(bsbi, q, scoring, k=k)
+            retrieve(instance, q, scoring, k=k)
             total_time += time.perf_counter() - start
             total_queries += 1
 
@@ -273,12 +308,12 @@ def compare_retrieval_speed(configs, queries, k=10):
     min_avg = min(avg for _, avg, _ in results)
     min_total = min(total for _, _, total in results)
 
-    print(f"  {'Configuration':<30} {'Avg/query':>12} {'Rel Avg':>10} {'Total':>12} {'Rel Total':>10}")
-    print(f"  {'-'*30} {'-'*12} {'-'*10} {'-'*12} {'-'*10}")
+    print(f"  {'Configuration':<40} {'Avg/query':>12} {'Rel Avg':>10} {'Total':>12} {'Rel Total':>10}")
+    print(f"  {'-'*40} {'-'*12} {'-'*10} {'-'*12} {'-'*10}")
     for name, avg, total in results:
         rel_avg = avg / min_avg
         rel_total = total / min_total
-        print(f"  {name:<30} {avg:>9.2f} ms  {rel_avg:>9.2f}x {total:>9.2f} ms  {rel_total:>9.2f}x")
+        print(f"  {name:<40} {avg:>9.2f} ms  {rel_avg:>9.2f}x {total:>9.2f} ms  {rel_total:>9.2f}x")
     print()
 
 
@@ -304,7 +339,7 @@ def measure_effectiveness(config, qrels, query_file="queries.txt", k=1000):
     dict
         Dictionary of metric_name -> score
     """
-    bsbi = get_bsbi_instance(config)
+    instance = get_index_instance(config)
     scoring = config["scoring"]
 
     metrics = {}
@@ -321,7 +356,7 @@ def measure_effectiveness(config, qrels, query_file="queries.txt", k=1000):
             num_relevant = sum(qrels[qid].values())
 
             ranking = []
-            for (score, doc) in retrieve(bsbi, query, scoring, k=k):
+            for (score, doc) in retrieve(instance, query, scoring, k=k):
                 did = int(re.search(r'\/.*\/.*\/(.*)\.txt', doc).group(1))
                 ranking.append(qrels[qid][did])
             rbp_scores.append(rbp(ranking))
@@ -359,13 +394,13 @@ def compare_effectiveness(configs, qrels):
 
     metric_names = sorted(all_metric_names)
 
-    header = f"  {'Configuration':<30}"
+    header = f"  {'Configuration':<40}"
     for m in metric_names:
         header += f" {m:>10}"
     print(header)
-    print(f"  {'-'*30}" + f" {'-'*10}" * len(metric_names))
+    print(f"  {'-'*40}" + f" {'-'*10}" * len(metric_names))
     for name, metrics in results:
-        row = f"  {name:<30}"
+        row = f"  {name:<40}"
         for m in metric_names:
             row += f" {metrics.get(m, 0):.6f}  "
         print(row)

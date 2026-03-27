@@ -1,5 +1,6 @@
 import os
 from bsbi import BSBIIndex
+from spimi import SPIMIIndex
 from compression import VBEPostings, EliasGammaPostings
 
 queries = ["alkylated with radioactive iodoacetate", \
@@ -7,27 +8,29 @@ queries = ["alkylated with radioactive iodoacetate", \
            "lipid metabolism in toxemia and normal pregnancy"]
 
 # indexing has been performed previously
-# BSBIIndex serves only as an abstraction for that index
-for postings_encoding in [VBEPostings, EliasGammaPostings]:
-    BSBI_instance = BSBIIndex(data_dir = 'collection', \
+# BSBIIndex / SPIMIIndex serve only as abstractions for the index
+for index_method, IndexClass, method_name in [("bsbi", BSBIIndex, "BSBI"),
+                                               ("spimi", SPIMIIndex, "SPIMI")]:
+    for postings_encoding in [VBEPostings, EliasGammaPostings]:
+        instance = IndexClass(data_dir = 'collection', \
                               postings_encoding = postings_encoding, \
-                              output_dir = os.path.join('index', postings_encoding.name), \
-                              tmp_dir = os.path.join('tmp', postings_encoding.name))
+                              output_dir = os.path.join('index', index_method, postings_encoding.name), \
+                              tmp_dir = os.path.join('tmp', index_method, postings_encoding.name))
 
-    scoring_methods = [
-        ("TF-IDF", BSBI_instance.retrieve_tfidf),
-        ("BM25 Okapi", BSBI_instance.retrieve_bm25),
-        ("BM25 Alt 2", BSBI_instance.retrieve_bm25_alt2),
-        ("BM25 Alt 3", BSBI_instance.retrieve_bm25_alt3),
-        ("WAND BM25", BSBI_instance.retrieve_wand_bm25),
-    ]
+        scoring_methods = [
+            ("TF-IDF", instance.retrieve_tfidf),
+            ("BM25 Okapi", instance.retrieve_bm25),
+            ("BM25 Alt 2", instance.retrieve_bm25_alt2),
+            ("BM25 Alt 3", instance.retrieve_bm25_alt3),
+            ("WAND BM25", instance.retrieve_wand_bm25),
+        ]
 
-    for scoring_name, retrieve_fn in scoring_methods:
-        print(f"===== {postings_encoding.__name__} + {scoring_name} =====")
-        for query in queries:
-            print("Query  : ", query)
-            print("Results:")
-            for (score, doc) in retrieve_fn(query, k = 10):
-                print(f"  {doc:30} {score:>.3f}")
+        for scoring_name, retrieve_fn in scoring_methods:
+            print(f"===== {method_name} + {postings_encoding.__name__} + {scoring_name} =====")
+            for query in queries:
+                print("Query  : ", query)
+                print("Results:")
+                for (score, doc) in retrieve_fn(query, k = 10):
+                    print(f"  {doc:30} {score:>.3f}")
+                print()
             print()
-        print()

@@ -147,7 +147,7 @@ def load_qrels(qrel_file = "qrels.txt", max_q_id = 30, max_doc_id = 1033):
 
 ######## >>>>> EVALUATION !
 
-def eval(qrels, postings_encoding = VBEPostings, scoring = "tfidf", query_file = "queries.txt", k = 1000):
+def eval(qrels, postings_encoding = VBEPostings, scoring = "tfidf", index_method = "bsbi", query_file = "queries.txt", k = 1000):
   """
     Loop over all 30 queries, compute the score for each query,
     then compute the MEAN SCORE over those 30 queries.
@@ -161,22 +161,31 @@ def eval(qrels, postings_encoding = VBEPostings, scoring = "tfidf", query_file =
         Postings encoding class (e.g., VBEPostings, EliasGammaPostings)
     scoring : str
         Scoring method: "tfidf", "bm25", "bm25_alt2", or "bm25_alt3"
+    index_method : str
+        Index construction method: "bsbi" or "spimi"
     query_file : str
         Path to the file containing queries
     k : int
         Number of top documents to retrieve per query
   """
-  BSBI_instance = BSBIIndex(data_dir = 'collection', \
-                          postings_encoding = postings_encoding, \
-                          output_dir = os.path.join('index', postings_encoding.name), \
-                          tmp_dir = os.path.join('tmp', postings_encoding.name))
+  if index_method == "spimi":
+      from spimi import SPIMIIndex
+      instance = SPIMIIndex(data_dir = 'collection',
+                            postings_encoding = postings_encoding,
+                            output_dir = os.path.join('index', 'spimi', postings_encoding.name),
+                            tmp_dir = os.path.join('tmp', 'spimi', postings_encoding.name))
+  else:
+      instance = BSBIIndex(data_dir = 'collection',
+                           postings_encoding = postings_encoding,
+                           output_dir = os.path.join('index', 'bsbi', postings_encoding.name),
+                           tmp_dir = os.path.join('tmp', 'bsbi', postings_encoding.name))
 
   retrieve_fn = {
-      "tfidf": BSBI_instance.retrieve_tfidf,
-      "bm25": BSBI_instance.retrieve_bm25,
-      "bm25_alt2": BSBI_instance.retrieve_bm25_alt2,
-      "bm25_alt3": BSBI_instance.retrieve_bm25_alt3,
-      "wand_bm25": BSBI_instance.retrieve_wand_bm25,
+      "tfidf": instance.retrieve_tfidf,
+      "bm25": instance.retrieve_bm25,
+      "bm25_alt2": instance.retrieve_bm25_alt2,
+      "bm25_alt3": instance.retrieve_bm25_alt3,
+      "wand_bm25": instance.retrieve_wand_bm25,
   }[scoring]
 
   with open(query_file) as file:
@@ -215,7 +224,8 @@ if __name__ == '__main__':
   assert qrels["Q1"][166] == 1, "qrels incorrect"
   assert qrels["Q1"][300] == 0, "qrels incorrect"
 
-  for postings_encoding in [VBEPostings, EliasGammaPostings]:
-    print(f"\n===== Evaluation using {postings_encoding.__name__} =====")
-    for scoring in ["tfidf", "bm25", "bm25_alt2", "bm25_alt3", "wand_bm25"]:
-      eval(qrels, postings_encoding, scoring=scoring)
+  for index_method in ["bsbi", "spimi"]:
+    for postings_encoding in [VBEPostings, EliasGammaPostings]:
+      print(f"\n===== Evaluation using {index_method.upper()} + {postings_encoding.__name__} =====")
+      for scoring in ["tfidf", "bm25", "bm25_alt2", "bm25_alt3", "wand_bm25"]:
+        eval(qrels, postings_encoding, scoring=scoring, index_method=index_method)

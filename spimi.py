@@ -1,8 +1,6 @@
 import os
 import pickle
-import contextlib
 import heapq
-import time
 import math
 from bisect import bisect_left
 from collections import Counter
@@ -12,21 +10,33 @@ from util import IdMap, sorted_merge_posts_and_tfs
 from compression import StandardPostings, VBEPostings, EliasGammaPostings
 from tqdm import tqdm
 
-class BSBIIndex:
+class SPIMIIndex:
     """
+    Single-Pass In-Memory Indexing (SPIMI) implementation.
+
+    Key difference from BSBI:
+      - BSBI maintains a global term-to-termID mapping across all blocks,
+        generates (termID, docID) pairs, and sorts them.
+      - SPIMI builds a separate dictionary per block, mapping term strings
+        directly to postings lists (hash table). No global term-to-termID
+        mapping is needed during block processing. Only the dictionary keys
+        (term strings) are sorted at the end of each block — NOT the
+        termID-docID pairs like in BSBI.
+      - Term IDs are assigned only during the final merge step.
+      - Time complexity per block is O(T) where T = number of tokens,
+        since there is no sorting of termID-docID pairs.
+
     Attributes
     ----------
-    term_id_map(IdMap): For mapping terms to termIDs
-    doc_id_map(IdMap): For mapping relative paths of documents (e.g.,
-                    /collection/0/gamma.txt) to docIDs
+    term_id_map(IdMap): For mapping terms to termIDs (built during merge)
+    doc_id_map(IdMap): For mapping relative paths of documents to docIDs
     data_dir(str): Path to data
     output_dir(str): Path to output final index files
     tmp_dir(str): Path to output intermediate index files
-    postings_encoding: See compression.py, candidates are StandardPostings,
-                    VBEPostings, etc.
+    postings_encoding: See compression.py
     index_name(str): Name of the file containing the inverted index
     """
-    def __init__(self, data_dir, output_dir, postings_encoding, index_name = "main_index", tmp_dir = "tmp"):
+    def __init__(self, data_dir, output_dir, postings_encoding, index_name="main_index", tmp_dir="tmp"):
         self.term_id_map = IdMap()
         self.doc_id_map = IdMap()
         self.data_dir = data_dir
@@ -34,19 +44,12 @@ class BSBIIndex:
         self.tmp_dir = tmp_dir
         self.index_name = index_name
         self.postings_encoding = postings_encoding
-
-        # To store the filenames of all intermediate inverted indices
         self.intermediate_indices = []
-
-        # Pre-computed average document length for BM25
         self.avdl = None
-
-        # Pre-computed per-term upper bounds for WAND
         self.wand_ub = None
 
     def save(self):
         """Save doc_id_map and term_id_map to the output directory via pickle"""
-
         with open(os.path.join(self.output_dir, 'terms.dict'), 'wb') as f:
             pickle.dump(self.term_id_map, f)
         with open(os.path.join(self.output_dir, 'docs.dict'), 'wb') as f:
@@ -54,7 +57,6 @@ class BSBIIndex:
 
     def load(self):
         """Load doc_id_map, term_id_map, and avdl from the output directory"""
-
         with open(os.path.join(self.output_dir, 'terms.dict'), 'rb') as f:
             self.term_id_map = pickle.load(f)
         with open(os.path.join(self.output_dir, 'docs.dict'), 'rb') as f:
@@ -64,14 +66,11 @@ class BSBIIndex:
             with open(avdl_path, 'rb') as f:
                 self.avdl = pickle.load(f)
         else:
-            # fallback - compute from index metadata if avdl.pkl hasn't been generated yet
             with InvertedIndexReader(self.index_name, self.postings_encoding, directory=self.output_dir) as reader:
                 self.avdl = sum(reader.doc_length.values()) / len(reader.doc_length)
-            # save it
             with open(avdl_path, 'wb') as f:
                 pickle.dump(self.avdl, f)
 
-        # Load WAND upper bounds if available
         wand_ub_path = os.path.join(self.output_dir, 'wand_upper_bounds.pkl')
         if os.path.exists(wand_ub_path):
             with open(wand_ub_path, 'rb') as f:
@@ -83,150 +82,185 @@ class BSBIIndex:
 
     def parse_block(self, block_dir_relative):
         """
-        Parse text files into a sequence of <termID, docID> pairs.
+        Produce a token stream of (term_string, doc_id) pairs.
 
-        Use available tools for English Stemming.
+        Unlike BSBI's parse_block which returns (termID, docID) pairs
+        using a global term_id_map, SPIMI keeps terms as raw strings.
+        Each block will build its own local dictionary from these strings.
 
-        DON'T FORGET TO REMOVE STOPWORDS!
-
-        For "sentence segmentation" and "tokenization", you can use
-        regex or other machine learning-based tools.
+        The doc_id_map IS still global (shared across blocks) since we
+        need consistent document IDs throughout.
 
         Parameters
         ----------
         block_dir_relative : str
-            Relative path to the directory containing text files for a block.
-
-            NOTE that one folder in the collection is considered to represent one block.
-            The concept of a block in this assignment differs from the concept of a block
-            related to operating systems.
+            Relative path to a sub-directory within the collection folder.
 
         Returns
         -------
-        List[Tuple[Int, Int]]
-            Returns all the td_pairs extracted from the block
-            (i.e., from a sub-directory within the collection folder)
-
-        Must use self.term_id_map and self.doc_id_map to obtain
-        termIDs and docIDs. These two variables must persist across all calls
-        to parse_block(...).
+        List[Tuple[str, int]]
+            Token stream of (term_string, doc_id) pairs.
         """
         dir = "./" + self.data_dir + "/" + block_dir_relative
-        td_pairs = []
+        token_stream = []
         for filename in next(os.walk(dir))[2]:
             docname = dir + "/" + filename
-            with open(docname, "r", encoding = "utf8", errors = "surrogateescape") as f:
+            with open(docname, "r", encoding="utf8", errors="surrogateescape") as f:
+                doc_id = self.doc_id_map[docname]
                 for token in f.read().split():
-                    td_pairs.append((self.term_id_map[token], self.doc_id_map[docname]))
+                    token_stream.append((token, doc_id))
+        return token_stream
 
-        return td_pairs
-
-    def invert_write(self, td_pairs, index):
+    def spimi_invert(self, token_stream):
         """
-        Invert td_pairs (list of <termID, docID> pairs) and
-        write them to the index. Here the BSBI concept is applied where
-        only one large dictionary is maintained for the entire block.
-        However, the storage technique uses the SPIMI strategy,
-        namely the use of a hashtable data structure (in Python this can
-        be a Dictionary).
+        SPIMI-INVERT algorithm (textbook pseudocode).
 
-        ASSUMPTION: td_pairs fit in memory
+        Builds an in-memory hash table (Python dict) mapping each term
+        string directly to its postings with term frequencies. Postings
+        are appended directly to the list — no need to first collect
+        (termID, docID) pairs and then sort them like BSBI does.
 
-        In Programming Assignment 1, we only added terms and
-        the list of sorted Doc IDs. Now in Programming Assignment 2,
-        we also need to add the list of TFs.
+        At the end, only the dictionary keys (terms) are sorted. This is
+        much cheaper than sorting all termID-docID pairs, since the number
+        of unique terms << number of termID-docID pairs.
 
         Parameters
         ----------
-        td_pairs: List[Tuple[Int, Int]]
-            List of termID-docID pairs
-        index: InvertedIndexWriter
-            Inverted index on disk (file) associated with a "block"
+        token_stream : List[Tuple[str, int]]
+            List of (term_string, doc_id) pairs from parse_block.
+
+        Returns
+        -------
+        sorted_terms : List[str]
+            Sorted list of unique term strings in this block.
+        dictionary : Dict[str, Dict[int, int]]
+            Mapping of term_string -> {doc_id: tf}.
         """
-        term_dict = {}
-        term_tf = {}
-        for term_id, doc_id in td_pairs:
-            if term_id not in term_dict:
-                term_dict[term_id] = set()
-                term_tf[term_id] = {}
-            term_dict[term_id].add(doc_id)
-            if doc_id not in term_tf[term_id]:
-                term_tf[term_id][doc_id] = 0
-            term_tf[term_id][doc_id] += 1
-        for term_id in sorted(term_dict.keys()):
-            sorted_doc_id = sorted(list(term_dict[term_id]))
-            assoc_tf = [term_tf[term_id][doc_id] for doc_id in sorted_doc_id]
-            index.append(term_id, sorted_doc_id, assoc_tf)
+        dictionary = {}                             # 1  dictionary = NEWHASH()
+        for term, doc_id in token_stream:           # 2-3  while (free memory) token <- next(stream)
+            if term not in dictionary:              # 4  if term(token) not in dictionary
+                dictionary[term] = {}               # 5    postings_list = ADDTODICTIONARY(dictionary, term)
+            postings = dictionary[term]             # 7  postings_list = GETPOSTINGSLIST(dictionary, term)
+            if doc_id not in postings:
+                postings[doc_id] = 0
+            postings[doc_id] += 1                   # 11 ADDTOPOSTINGSLIST(postings_list, docID(token))
+        sorted_terms = sorted(dictionary.keys())    # 12 sorted_terms <- SORTTERMS(dictionary)
+        return sorted_terms, dictionary             # 13 return sorted_terms, dictionary
 
-    def merge(self, indices, merged_index):
+    def write_block_to_disk(self, sorted_terms, dictionary, index_id):
         """
-        Merge all intermediate inverted indices into a single index.
+        WRITEBLOCKTODISK: persist one block's inverted index as a pickle file.
 
-        This is the part that performs EXTERNAL MERGE SORT.
-
-        Use the sorted_merge_posts_and_tfs(..) function in the util module.
+        Each block is stored as a list of (term_string, sorted_doc_ids, tf_list)
+        tuples, pre-sorted by term string so that the merge step can use
+        heapq.merge directly.
 
         Parameters
         ----------
-        indices: List[InvertedIndexReader]
-            A list of intermediate InvertedIndexReader objects, each
-            representing an iterable intermediate inverted index
-            for a block.
-
-        merged_index: InvertedIndexWriter
-            An InvertedIndexWriter object instance that is the result of merging
-            all intermediate InvertedIndexWriter objects.
+        sorted_terms : List[str]
+            Terms in sorted order.
+        dictionary : Dict[str, Dict[int, int]]
+            {term_string: {doc_id: tf}}.
+        index_id : str
+            Identifier for this intermediate index file.
         """
-        # the following code assumes there is at least 1 term
-        merged_iter = heapq.merge(*indices, key = lambda x: x[0])
-        curr, postings, tf_list = next(merged_iter) # first item
-        for t, postings_, tf_list_ in merged_iter: # from the second item
-            if t == curr:
-                zip_p_tf = sorted_merge_posts_and_tfs(list(zip(postings, tf_list)), \
-                                                      list(zip(postings_, tf_list_)))
+        block = []
+        for term in sorted_terms:
+            postings = dictionary[term]
+            sorted_doc_ids = sorted(postings.keys())
+            tf_list = [postings[doc_id] for doc_id in sorted_doc_ids]
+            block.append((term, sorted_doc_ids, tf_list))
+
+        path = os.path.join(self.tmp_dir, index_id + '.pkl')
+        with open(path, 'wb') as f:
+            pickle.dump(block, f)
+
+    def merge(self, merged_index):
+        """
+        MERGEBLOCKS: merge all intermediate SPIMI blocks into a single index.
+
+        Loads all intermediate pickle blocks and uses heapq.merge to produce
+        a single sorted stream of (term_string, postings, tf_list) tuples.
+        When the same term appears in multiple blocks, their postings lists
+        are merged using sorted_merge_posts_and_tfs.
+
+        During merge, global term IDs are assigned via self.term_id_map —
+        this is the first (and only) time term-to-termID mapping happens.
+
+        Parameters
+        ----------
+        merged_index : InvertedIndexWriter
+            The final merged index writer.
+        """
+        blocks = []
+        for index_id in self.intermediate_indices:
+            path = os.path.join(self.tmp_dir, index_id + '.pkl')
+            with open(path, 'rb') as f:
+                blocks.append(pickle.load(f))
+
+        merged_iter = heapq.merge(*blocks, key=lambda x: x[0])
+        curr_term, postings, tf_list = next(merged_iter)
+        for term, postings_, tf_list_ in merged_iter:
+            if term == curr_term:
+                zip_p_tf = sorted_merge_posts_and_tfs(
+                    list(zip(postings, tf_list)),
+                    list(zip(postings_, tf_list_))
+                )
                 postings = [doc_id for (doc_id, _) in zip_p_tf]
                 tf_list = [tf for (_, tf) in zip_p_tf]
             else:
-                merged_index.append(curr, postings, tf_list)
-                curr, postings, tf_list = t, postings_, tf_list_
-        merged_index.append(curr, postings, tf_list)
+                term_id = self.term_id_map[curr_term]
+                merged_index.append(term_id, postings, tf_list)
+                curr_term, postings, tf_list = term, postings_, tf_list_
+        term_id = self.term_id_map[curr_term]
+        merged_index.append(term_id, postings, tf_list)
 
-    def retrieve_tfidf(self, query, k = 10):
+    def index(self):
         """
-        Perform Ranked Retrieval using the TaaT (Term-at-a-Time) scheme.
-        This method returns the top-K retrieval results.
+        SPIMI index construction (follows the SPIMIINDEXCONSTRUCTION pseudocode).
 
-        w(t, D) = (1 + log tf(t, D))       if tf(t, D) > 0
-                = 0                        otherwise
+        For each block (sub-directory in collection):
+          1. PARSENEXTBLOCK  — produce token stream (term strings, not termIDs)
+          2. SPIMI-INVERT    — build per-block dictionary via hash table
+          3. WRITEBLOCKTODISK — write sorted block to disk as pickle
 
-        w(t, Q) = IDF = log (N / df(t))
-
-        Score = for each term in the query, accumulate w(t, Q) * w(t, D).
-                (no need to normalize by document length)
-
-        Notes:
-            1. DF(t) information is in the postings_dict dictionary of the merged index
-            2. TF(t, D) information is in the tf_list
-            3. N can be obtained from doc_length in the merged index, len(doc_length)
-
-        Parameters
-        ----------
-        query: str
-            Query tokens separated by spaces
-
-            example: Query "universitas indonesia depok" means there are
-            three terms: universitas, indonesia, and depok
-
-        Result
-        ------
-        List[(int, str)]
-            List of tuples: the first element is the similarity score, and the
-            second is the document name.
-            Top-K documents sorted in descending order BY SCORE.
-
-        DO NOT THROW ERROR/EXCEPTION for terms that DO NOT EXIST in the collection.
-
+        Finally:
+          4. MERGEBLOCKS — merge all blocks, assign global term IDs, write
+             final compressed index using InvertedIndexWriter
         """
+        os.makedirs(self.tmp_dir, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
+
+        for block_dir_relative in tqdm(sorted(next(os.walk(self.data_dir))[1])):
+            # PARSENEXTBLOCK
+            token_stream = self.parse_block(block_dir_relative)
+            # SPIMI-INVERT
+            sorted_terms, dictionary = self.spimi_invert(token_stream)
+            # WRITEBLOCKTODISK
+            index_id = 'intermediate_index_' + block_dir_relative
+            self.intermediate_indices.append(index_id)
+            self.write_block_to_disk(sorted_terms, dictionary, index_id)
+
+        # MERGEBLOCKS
+        with InvertedIndexWriter(self.index_name, self.postings_encoding, directory=self.output_dir) as merged_index:
+            self.merge(merged_index)
+
+            self.avdl = sum(merged_index.doc_length.values()) / len(merged_index.doc_length)
+            with open(os.path.join(self.output_dir, 'avdl.pkl'), 'wb') as f:
+                pickle.dump(self.avdl, f)
+
+        # Save term_id_map (built during merge) and doc_id_map
+        self.save()
+
+        # Pre-compute WAND upper bounds (needs a reader, so after writer closes)
+        self.precompute_wand_upper_bounds()
+
+    # ------------------------------------------------------------------ #
+    #  Retrieval methods (identical to BSBIIndex — shared final index     #
+    #  format means retrieval logic is the same)                          #
+    # ------------------------------------------------------------------ #
+
+    def retrieve_tfidf(self, query, k=10):
         if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
             self.load()
 
@@ -246,30 +280,10 @@ class BSBIIndex:
                         if tf > 0:
                             scores[doc_id] += math.log(N / df) * (1 + math.log(tf))
 
-            # Top-K
             docs = [(score, self.doc_id_map[doc_id]) for (doc_id, score) in scores.items()]
-            return sorted(docs, key = lambda x: x[0], reverse = True)[:k]
+            return sorted(docs, key=lambda x: x[0], reverse=True)[:k]
 
     def retrieve_bm25(self, query, k=10, k1=1.2, b=0.75):
-        """
-        Okapi BM25 scoring.
-
-        RSV = Σ_{t∈Q∩D} log(N/df_t) · (k1+1)·tf_t / (k1·((1-b) + b·dl/avdl) + tf_t)
-
-        Parameters
-        ----------
-        query: str
-            Query tokens separated by spaces
-        k1: float
-            Term frequency saturation parameter (default 1.2)
-        b: float
-            Document length normalization parameter (default 0.75)
-
-        Result
-        ------
-        List[(float, str)]
-            Top-K documents sorted in descending order by score
-        """
         if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
             self.load()
 
@@ -296,25 +310,6 @@ class BSBIIndex:
             return sorted(docs, key=lambda x: x[0], reverse=True)[:k]
 
     def retrieve_bm25_alt2(self, query, k=10, k1=1.2, b=0.75):
-        """
-        BM25 Alternative 2 — uses alternative IDF.
-
-        RSV = Σ_{t∈Q∩D} log((N-df_t+0.5)/(df_t+0.5)) · (k1+1)·tf_t / (k1·((1-b)+b·dl/avdl)+tf_t)
-
-        Parameters
-        ----------
-        query: str
-            Query tokens separated by spaces
-        k1: float
-            Term frequency saturation parameter (default 1.2)
-        b: float
-            Document length normalization parameter (default 0.75)
-
-        Result
-        ------
-        List[(float, str)]
-            Top-K documents sorted in descending order by score
-        """
         if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
             self.load()
 
@@ -341,28 +336,6 @@ class BSBIIndex:
             return sorted(docs, key=lambda x: x[0], reverse=True)[:k]
 
     def retrieve_bm25_alt3(self, query, k=10, k1=1.2, b=0.75, k2=100):
-        """
-        BM25 Alternative 3 — adds query term frequency scaling.
-
-        RSV = Σ_{t∈Q∩D} log(N/df_t) · (k1+1)·tf(t,d) / (k1·((1-b)+b·dl/avdl)+tf(t,d))
-                                      · (k2+1)·tf(t,Q) / (k2+tf(t,Q))
-
-        Parameters
-        ----------
-        query: str
-            Query tokens separated by spaces
-        k1: float
-            Term frequency saturation parameter (default 1.2)
-        b: float
-            Document length normalization parameter (default 0.75)
-        k2: float
-            Query term frequency saturation parameter (default 100)
-
-        Result
-        ------
-        List[(float, str)]
-            Top-K documents sorted in descending order by score
-        """
         if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
             self.load()
 
@@ -393,9 +366,6 @@ class BSBIIndex:
             return sorted(docs, key=lambda x: x[0], reverse=True)[:k]
 
     def precompute_wand_upper_bounds(self, k1=1.2, b=0.75):
-        """Precompute the maximum BM25 score each term can contribute
-        to any document. Saved as {term_id: float} in wand_upper_bounds.pkl.
-        """
         if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
             self.load()
 
@@ -421,12 +391,6 @@ class BSBIIndex:
         self.wand_ub = ub
 
     def retrieve_wand_bm25(self, query, k=10, k1=1.2, b=0.75):
-        """WAND Top-K retrieval using BM25 scoring.
-
-        Two-level approach:
-          First phase (WAND Condition): check if UB(d,q) >= θ
-          Second phase (Full Evaluation): compute exact score for candidates
-        """
         if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
             self.load()
         if self.wand_ub is None:
@@ -438,8 +402,6 @@ class BSBIIndex:
             N = len(merged_index.doc_length)
             avdl = self.avdl
 
-            # init(queryTerms): load postings, set each pointer to first item
-            # Each entry: [postings_list, tf_list, idf (α_t), UB_t, ptr]
             terms = []
             for t in query_terms:
                 if t not in merged_index.postings_dict or t not in self.wand_ub:
@@ -453,14 +415,12 @@ class BSBIIndex:
             if not terms:
                 return []
 
-            topk = []   # min-heap
-            theta = 0.0 # θ — minimum score in current Top-K
+            topk = []
+            theta = 0.0
 
             while terms:
-                # sort(terms, posting) — sort by current DID
                 terms.sort(key=lambda t: t[0][t[4]])
 
-                # findPivotTerm(terms, θ) — first pTerm where accumulated UB >= θ
                 cumul_ub = 0.0
                 pTerm = -1
                 for i in range(len(terms)):
@@ -470,24 +430,20 @@ class BSBIIndex:
                         break
 
                 if pTerm == -1:
-                    break  # no more candidates can beat θ
+                    break
 
-                # pivot ← posting[pTerm].DID
                 pivot = terms[pTerm][0][terms[pTerm][4]]
 
-                # if posting[0].DID == pivot → all preceding terms point at pivot
                 if terms[0][0][terms[0][4]] == pivot:
-                    # Full evaluation: compute exact BM25 score for pivot doc
                     dl = merged_index.doc_length.get(pivot, 0)
                     score = 0.0
                     for t in terms:
                         if t[0][t[4]] != pivot:
-                            break  # sorted → rest are at later docs
+                            break
                         tf = t[1][t[4]]
                         score += t[2] * ((k1 + 1) * tf) / (k1 * ((1 - b) + b * dl / avdl) + tf)
-                        t[4] += 1  # advance past pivot
+                        t[4] += 1
 
-                    # Update Top-K heap and θ
                     if score > theta:
                         heapq.heappush(topk, (score, pivot))
                         if len(topk) > k:
@@ -495,63 +451,20 @@ class BSBIIndex:
                         if len(topk) == k:
                             theta = topk[0][0]
                 else:
-                    # Advance preceding terms to pivot (iterator.next(pivot))
                     for t in terms[:pTerm]:
                         if t[0][t[4]] < pivot:
                             t[4] = bisect_left(t[0], pivot, t[4])
 
-                # Remove exhausted posting lists
                 terms = [t for t in terms if t[4] < len(t[0])]
 
             return [(s, self.doc_id_map[d]) for s, d in sorted(topk, reverse=True)]
-
-    def index(self):
-        """
-        Base indexing code
-        MAIN PART for performing Indexing with the BSBI (blocked-sort
-        based indexing) scheme.
-
-        This method scans all data in the collection, calls parse_block
-        to parse documents, and calls invert_write which performs inversion
-        on each block and saves it to a new index.
-
-        Intermediate indices are written to tmp_dir, while the final
-        merged index and dictionaries are saved to output_dir.
-        """
-        os.makedirs(self.tmp_dir, exist_ok=True)
-        os.makedirs(self.output_dir, exist_ok=True)
-
-        # loop for each sub-directory in the collection folder (each block)
-        for block_dir_relative in tqdm(sorted(next(os.walk(self.data_dir))[1])):
-            td_pairs = self.parse_block(block_dir_relative)
-            index_id = 'intermediate_index_'+block_dir_relative
-            self.intermediate_indices.append(index_id)
-            with InvertedIndexWriter(index_id, self.postings_encoding, directory = self.tmp_dir) as index:
-                self.invert_write(td_pairs, index)
-                td_pairs = None
-
-        self.save()
-
-        with InvertedIndexWriter(self.index_name, self.postings_encoding, directory = self.output_dir) as merged_index:
-            with contextlib.ExitStack() as stack:
-                indices = [stack.enter_context(InvertedIndexReader(index_id, self.postings_encoding, directory=self.tmp_dir))
-                               for index_id in self.intermediate_indices]
-                self.merge(indices, merged_index)
-
-            # Pre-compute and save average document length for BM25
-            self.avdl = sum(merged_index.doc_length.values()) / len(merged_index.doc_length)
-            with open(os.path.join(self.output_dir, 'avdl.pkl'), 'wb') as f:
-                pickle.dump(self.avdl, f)
-
-        # Pre-compute WAND upper bounds (needs a reader, so after writer closes)
-        self.precompute_wand_upper_bounds()
 
 
 if __name__ == "__main__":
 
     for postings_encoding in [VBEPostings, EliasGammaPostings]:
-        BSBI_instance = BSBIIndex(data_dir = 'collection', \
-                                  postings_encoding = postings_encoding, \
-                                  output_dir = os.path.join('index', 'bsbi', postings_encoding.name), \
-                                  tmp_dir = os.path.join('tmp', 'bsbi', postings_encoding.name))
-        BSBI_instance.index() # start indexing!
+        SPIMI_instance = SPIMIIndex(data_dir='collection',
+                                    postings_encoding=postings_encoding,
+                                    output_dir=os.path.join('index', 'spimi', postings_encoding.name),
+                                    tmp_dir=os.path.join('tmp', 'spimi', postings_encoding.name))
+        SPIMI_instance.index()  # start indexing!
