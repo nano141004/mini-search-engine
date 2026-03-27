@@ -2,10 +2,11 @@
 Comparative analysis of search engine configurations.
 
 Compares different index construction methods, compression methods,
-and scoring/retrieval strategies across three dimensions:
-  1. Index size on disk after indexing
-  2. Retrieval speed (latency per query)
-  3. Effectiveness (evaluation metrics)
+and scoring/retrieval strategies across four dimensions:
+  1. Index build time
+  2. Index size on disk after indexing
+  3. Retrieval speed (latency per query)
+  4. Effectiveness (evaluation metrics)
 
 Usage:
     python analysis.py
@@ -138,12 +139,14 @@ def get_index_instance(config):
     build_key = f"{method}_{enc.name}"
     if build_key not in _built_indices:
         print(f"  Building index for {method}/{enc.name}...")
+        start = time.perf_counter()
         instance.index()
-        _built_indices.add(build_key)
+        elapsed = time.perf_counter() - start
+        _built_indices[build_key] = elapsed
 
     return instance
 
-_built_indices = set()
+_built_indices = {}  # build_key -> elapsed seconds
 
 def retrieve(instance, query, scoring, k=10):
     """
@@ -179,7 +182,46 @@ def retrieve(instance, query, scoring, k=10):
         raise ValueError(f"Unknown scoring method: {scoring}")
 
 
-# 1. Index size comparison
+# 1. Index build time comparison
+
+def compare_build_times(configs):
+    """
+    Print a table comparing index build times across configurations.
+    Build time depends only on (index_method, encoding), not scoring,
+    so duplicates are shown only once.
+
+    Parameters
+    ----------
+    configs : List[dict]
+        List of configuration dictionaries
+    """
+    print("=" * 60)
+    print("1. INDEX BUILD TIME COMPARISON")
+    print("=" * 60)
+
+    # Ensure all indices are built (triggers get_index_instance)
+    seen = set()
+    results = []
+    for config in configs:
+        get_index_instance(config)
+        build_key = f"{config['index_method']}_{config['postings_encoding'].name}"
+        if build_key not in seen:
+            seen.add(build_key)
+            label = f"{config['index_method'].upper()} + {config['postings_encoding'].__name__}"
+            elapsed = _built_indices.get(build_key, 0.0)
+            results.append((label, elapsed))
+
+    min_time = min(t for _, t in results) if results else 1.0
+
+    print(f"  {'Configuration':<40} {'Time':>12} {'Relative':>10}")
+    print(f"  {'-'*40} {'-'*12} {'-'*10}")
+    for name, t in results:
+        relative = t / min_time if min_time > 0 else 0
+        print(f"  {name:<40} {t:>9.3f} s   {relative:>9.2f}x")
+    print()
+
+
+# 2. Index size comparison (on disk)
 
 def measure_index_size(config):
     """
@@ -217,7 +259,7 @@ def compare_index_sizes(configs):
         List of configuration dictionaries
     """
     print("=" * 60)
-    print("1. INDEX SIZE COMPARISON")
+    print("2. INDEX SIZE COMPARISON")
     print("=" * 60)
 
     results = []
@@ -236,7 +278,7 @@ def compare_index_sizes(configs):
     print()
 
 
-# 2. Retrieval speed comparison
+# 3. Retrieval speed comparison
 
 def measure_retrieval_speed(config, queries, k=10, n_runs=3):
     """
@@ -297,7 +339,7 @@ def compare_retrieval_speed(configs, queries, k=10):
         Number of top results to retrieve
     """
     print("=" * 60)
-    print("2. RETRIEVAL SPEED COMPARISON")
+    print("3. RETRIEVAL SPEED COMPARISON")
     print("=" * 60)
 
     results = []
@@ -317,7 +359,7 @@ def compare_retrieval_speed(configs, queries, k=10):
     print()
 
 
-# 3. Effectiveness comparison
+# 4. Effectiveness comparison
 
 def measure_effectiveness(config, qrels, query_file="queries.txt", k=1000):
     """
@@ -382,7 +424,7 @@ def compare_effectiveness(configs, qrels):
         Query relevance judgments
     """
     print("=" * 60)
-    print("3. EFFECTIVENESS COMPARISON")
+    print("4. EFFECTIVENESS COMPARISON")
     print("=" * 60)
 
     results = []
@@ -421,12 +463,15 @@ if __name__ == "__main__":
             parts = line.strip().split()
             queries.append(" ".join(parts[1:]))
 
-    # 1. Index size
+    # 1. Build time (triggers index building for all configs)
+    compare_build_times(CONFIGURATIONS)
+
+    # 2. Index size
     compare_index_sizes(CONFIGURATIONS)
 
-    # 2. Retrieval speed
+    # 3. Retrieval speed
     compare_retrieval_speed(CONFIGURATIONS, queries, k=10)
 
-    # 3. Effectiveness
+    # 4. Effectiveness
     qrels = load_qrels()
     compare_effectiveness(CONFIGURATIONS, qrels)
