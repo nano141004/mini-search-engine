@@ -147,7 +147,7 @@ def load_qrels(qrel_file = "qrels.txt", max_q_id = 30, max_doc_id = 1033):
 
 ######## >>>>> EVALUATION !
 
-def eval(qrels, postings_encoding = VBEPostings, scoring = "tfidf", index_method = "bsbi", query_file = "queries.txt", k = 1000):
+def eval(qrels, postings_encoding = VBEPostings, scoring = "tfidf", index_method = "bsbi", dict_type = "idmap", query_file = "queries.txt", k = 1000):
   """
     Loop over all 30 queries, compute the score for each query,
     then compute the MEAN SCORE over those 30 queries.
@@ -163,22 +163,27 @@ def eval(qrels, postings_encoding = VBEPostings, scoring = "tfidf", index_method
         Scoring method: "tfidf", "bm25", "bm25_alt2", or "bm25_alt3"
     index_method : str
         Index construction method: "bsbi" or "spimi"
+    dict_type : str
+        Dictionary type: "idmap" (default) or "fst" (FST compression)
     query_file : str
         Path to the file containing queries
     k : int
         Number of top documents to retrieve per query
   """
+  method_dir = f"{index_method}_fst" if dict_type == "fst" else index_method
   if index_method == "spimi":
       from spimi import SPIMIIndex
       instance = SPIMIIndex(data_dir = 'collection',
                             postings_encoding = postings_encoding,
-                            output_dir = os.path.join('index', 'spimi', postings_encoding.name),
-                            tmp_dir = os.path.join('tmp', 'spimi', postings_encoding.name))
+                            output_dir = os.path.join('index', method_dir, postings_encoding.name),
+                            tmp_dir = os.path.join('tmp', method_dir, postings_encoding.name),
+                            dict_type = dict_type)
   else:
       instance = BSBIIndex(data_dir = 'collection',
                            postings_encoding = postings_encoding,
-                           output_dir = os.path.join('index', 'bsbi', postings_encoding.name),
-                           tmp_dir = os.path.join('tmp', 'bsbi', postings_encoding.name))
+                           output_dir = os.path.join('index', method_dir, postings_encoding.name),
+                           tmp_dir = os.path.join('tmp', method_dir, postings_encoding.name),
+                           dict_type = dict_type)
 
   retrieve_fn = {
       "tfidf": instance.retrieve_tfidf,
@@ -224,8 +229,10 @@ if __name__ == '__main__':
   assert qrels["Q1"][166] == 1, "qrels incorrect"
   assert qrels["Q1"][300] == 0, "qrels incorrect"
 
-  for index_method in ["bsbi", "spimi"]:
-    for postings_encoding in [VBEPostings, EliasGammaPostings]:
-      print(f"\n===== Evaluation using {index_method.upper()} + {postings_encoding.__name__} =====")
-      for scoring in ["tfidf", "bm25", "bm25_alt2", "bm25_alt3", "wand_bm25"]:
-        eval(qrels, postings_encoding, scoring=scoring, index_method=index_method)
+  for dict_type in ["idmap", "fst"]:
+    for index_method in ["bsbi", "spimi"]:
+      for postings_encoding in [VBEPostings, EliasGammaPostings]:
+        dict_label = " + FST" if dict_type == "fst" else ""
+        print(f"\n===== Evaluation using {index_method.upper()}{dict_label} + {postings_encoding.__name__} =====")
+        for scoring in ["tfidf", "bm25", "bm25_alt2", "bm25_alt3", "wand_bm25"]:
+          eval(qrels, postings_encoding, scoring=scoring, index_method=index_method, dict_type=dict_type)

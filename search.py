@@ -9,13 +9,17 @@ queries = ["alkylated with radioactive iodoacetate", \
 
 # indexing has been performed previously
 # BSBIIndex / SPIMIIndex serve only as abstractions for the index
-for index_method, IndexClass, method_name in [("bsbi", BSBIIndex, "BSBI"),
-                                               ("spimi", SPIMIIndex, "SPIMI")]:
+for dict_type in ["idmap", "fst"]:
+  for index_method, IndexClass, method_name in [("bsbi", BSBIIndex, "BSBI"),
+                                                 ("spimi", SPIMIIndex, "SPIMI")]:
     for postings_encoding in [VBEPostings, EliasGammaPostings]:
+        method_dir = f"{index_method}_fst" if dict_type == "fst" else index_method
+        dict_label = " + FST" if dict_type == "fst" else ""
         instance = IndexClass(data_dir = 'collection', \
                               postings_encoding = postings_encoding, \
-                              output_dir = os.path.join('index', index_method, postings_encoding.name), \
-                              tmp_dir = os.path.join('tmp', index_method, postings_encoding.name))
+                              output_dir = os.path.join('index', method_dir, postings_encoding.name), \
+                              tmp_dir = os.path.join('tmp', method_dir, postings_encoding.name), \
+                              dict_type = dict_type)
 
         scoring_methods = [
             ("TF-IDF", instance.retrieve_tfidf),
@@ -26,7 +30,7 @@ for index_method, IndexClass, method_name in [("bsbi", BSBIIndex, "BSBI"),
         ]
 
         for scoring_name, retrieve_fn in scoring_methods:
-            print(f"===== {method_name} + {postings_encoding.__name__} + {scoring_name} =====")
+            print(f"===== {method_name}{dict_label} + {postings_encoding.__name__} + {scoring_name} =====")
             for query in queries:
                 print("Query  : ", query)
                 print("Results:")

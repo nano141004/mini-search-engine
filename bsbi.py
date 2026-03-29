@@ -26,7 +26,7 @@ class BSBIIndex:
                     VBEPostings, etc.
     index_name(str): Name of the file containing the inverted index
     """
-    def __init__(self, data_dir, output_dir, postings_encoding, index_name = "main_index", tmp_dir = "tmp"):
+    def __init__(self, data_dir, output_dir, postings_encoding, index_name = "main_index", tmp_dir = "tmp", dict_type = "idmap"):
         self.term_id_map = IdMap()
         self.doc_id_map = IdMap()
         self.data_dir = data_dir
@@ -34,6 +34,7 @@ class BSBIIndex:
         self.tmp_dir = tmp_dir
         self.index_name = index_name
         self.postings_encoding = postings_encoding
+        self.dict_type = dict_type
 
         # To store the filenames of all intermediate inverted indices
         self.intermediate_indices = []
@@ -45,10 +46,17 @@ class BSBIIndex:
         self.wand_ub = None
 
     def save(self):
-        """Save doc_id_map and term_id_map to the output directory via pickle"""
+        """Save doc_id_map and term_id_map to the output directory via pickle.
+        If dict_type is 'fst', converts term_id_map to an FST-based
+        dictionary before saving (compresses via prefix+suffix sharing).
+        """
+        term_map = self.term_id_map
+        if self.dict_type == 'fst':
+            from fst import FSTIdMap
+            term_map = FSTIdMap.from_id_map(self.term_id_map)
 
         with open(os.path.join(self.output_dir, 'terms.dict'), 'wb') as f:
-            pickle.dump(self.term_id_map, f)
+            pickle.dump(term_map, f)
         with open(os.path.join(self.output_dir, 'docs.dict'), 'wb') as f:
             pickle.dump(self.doc_id_map, f)
 
@@ -549,9 +557,12 @@ class BSBIIndex:
 
 if __name__ == "__main__":
 
-    for postings_encoding in [VBEPostings, EliasGammaPostings]:
-        BSBI_instance = BSBIIndex(data_dir = 'collection', \
-                                  postings_encoding = postings_encoding, \
-                                  output_dir = os.path.join('index', 'bsbi', postings_encoding.name), \
-                                  tmp_dir = os.path.join('tmp', 'bsbi', postings_encoding.name))
-        BSBI_instance.index() # start indexing!
+    for dict_type in ['idmap', 'fst']:
+        method_dir = 'bsbi_fst' if dict_type == 'fst' else 'bsbi'
+        for postings_encoding in [VBEPostings, EliasGammaPostings]:
+            BSBI_instance = BSBIIndex(data_dir = 'collection', \
+                                      postings_encoding = postings_encoding, \
+                                      output_dir = os.path.join('index', method_dir, postings_encoding.name), \
+                                      tmp_dir = os.path.join('tmp', method_dir, postings_encoding.name), \
+                                      dict_type = dict_type)
+            BSBI_instance.index() # start indexing!

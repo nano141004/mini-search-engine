@@ -98,6 +98,35 @@ CONFIGURATIONS = [
         "postings_encoding": EliasGammaPostings,
         "scoring": "wand_bm25",
     },
+    # FST dictionary configurations (prefix+suffix sharing compression)
+    {
+        "name": "BSBI + FST + VBE + BM25 Okapi",
+        "index_method": "bsbi",
+        "dict_type": "fst",
+        "postings_encoding": VBEPostings,
+        "scoring": "wand_bm25",
+    },
+    {
+        "name": "BSBI + FST + Elias Gamma + BM25 Okapi",
+        "index_method": "bsbi",
+        "dict_type": "fst",
+        "postings_encoding": EliasGammaPostings,
+        "scoring": "wand_bm25",
+    },
+    {
+        "name": "SPIMI + FST + VBE + BM25 Okapi",
+        "index_method": "spimi",
+        "dict_type": "fst",
+        "postings_encoding": VBEPostings,
+        "scoring": "wand_bm25",
+    },
+    {
+        "name": "SPIMI + FST + Elias Gamma + BM25 Okapi",
+        "index_method": "spimi",
+        "dict_type": "fst",
+        "postings_encoding": EliasGammaPostings,
+        "scoring": "wand_bm25",
+    },
 ]
 
 
@@ -120,25 +149,29 @@ def get_index_instance(config):
     """
     enc = config["postings_encoding"]
     method = config["index_method"]
+    dict_type = config.get("dict_type", "idmap")
+    method_dir = f"{method}_fst" if dict_type == "fst" else method
 
     if method == "spimi":
         instance = SPIMIIndex(
             data_dir="collection",
             postings_encoding=enc,
-            output_dir=os.path.join("index", "spimi", enc.name),
-            tmp_dir=os.path.join("tmp", "spimi", enc.name),
+            output_dir=os.path.join("index", method_dir, enc.name),
+            tmp_dir=os.path.join("tmp", method_dir, enc.name),
+            dict_type=dict_type,
         )
     else:
         instance = BSBIIndex(
             data_dir="collection",
             postings_encoding=enc,
-            output_dir=os.path.join("index", "bsbi", enc.name),
-            tmp_dir=os.path.join("tmp", "bsbi", enc.name),
+            output_dir=os.path.join("index", method_dir, enc.name),
+            tmp_dir=os.path.join("tmp", method_dir, enc.name),
+            dict_type=dict_type,
         )
 
-    build_key = f"{method}_{enc.name}"
+    build_key = f"{method_dir}_{enc.name}"
     if build_key not in _built_indices:
-        print(f"  Building index for {method}/{enc.name}...")
+        print(f"  Building index for {method_dir}/{enc.name}...")
         start = time.perf_counter()
         instance.index()
         elapsed = time.perf_counter() - start
@@ -204,10 +237,13 @@ def compare_build_times(configs):
     results = []
     for config in configs:
         get_index_instance(config)
-        build_key = f"{config['index_method']}_{config['postings_encoding'].name}"
+        dict_type = config.get("dict_type", "idmap")
+        method_dir = f"{config['index_method']}_fst" if dict_type == "fst" else config["index_method"]
+        build_key = f"{method_dir}_{config['postings_encoding'].name}"
         if build_key not in seen:
             seen.add(build_key)
-            label = f"{config['index_method'].upper()} + {config['postings_encoding'].__name__}"
+            dict_label = " + FST" if dict_type == "fst" else ""
+            label = f"{config['index_method'].upper()}{dict_label} + {config['postings_encoding'].__name__}"
             elapsed = _built_indices.get(build_key, 0.0)
             results.append((label, elapsed))
 
@@ -251,8 +287,10 @@ def measure_index_size(config):
 
     enc = config["postings_encoding"]
     method = config["index_method"]
-    index_dir = os.path.join("index", method, enc.name)
-    tmp_dir = os.path.join("tmp", method, enc.name)
+    dict_type = config.get("dict_type", "idmap")
+    method_dir = f"{method}_fst" if dict_type == "fst" else method
+    index_dir = os.path.join("index", method_dir, enc.name)
+    tmp_dir = os.path.join("tmp", method_dir, enc.name)
     return dir_size(index_dir), dir_size(tmp_dir)
 
 def compare_index_sizes(configs):
@@ -277,12 +315,15 @@ def compare_index_sizes(configs):
     seen = set()
     results = []
     for config in configs:
-        build_key = f"{config['index_method']}_{config['postings_encoding'].name}"
+        dict_type = config.get("dict_type", "idmap")
+        method_dir = f"{config['index_method']}_fst" if dict_type == "fst" else config["index_method"]
+        build_key = f"{method_dir}_{config['postings_encoding'].name}"
         if build_key in seen:
             continue
         seen.add(build_key)
         final_size, tmp_size = measure_index_size(config)
-        label = f"{config['index_method'].upper()} + {config['postings_encoding'].__name__}"
+        dict_label = " + FST" if dict_type == "fst" else ""
+        label = f"{config['index_method'].upper()}{dict_label} + {config['postings_encoding'].__name__}"
         results.append((label, final_size, tmp_size))
 
     min_final = min(f for _, f, _ in results)
