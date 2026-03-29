@@ -4,3 +4,5 @@ index/**
 !index/.gitkeep
 tmp/**
 !tmp/.gitkeep
+
+venv/
