@@ -147,7 +147,7 @@ def load_qrels(qrel_file = "qrels.txt", max_q_id = 30, max_doc_id = 1033):
 
 ######## >>>>> EVALUATION !
 
-def eval(qrels, postings_encoding = VBEPostings, scoring = "tfidf", index_method = "bsbi", dict_type = "idmap", query_file = "queries.txt", k = 1000):
+def eval(qrels, postings_encoding = VBEPostings, scoring = "tfidf", index_method = "bsbi", dict_type = "idmap", query_file = "queries.txt", k = 1000, lsi_n_components = 100):
   """
     Loop over all 30 queries, compute the score for each query,
     then compute the MEAN SCORE over those 30 queries.
@@ -160,7 +160,7 @@ def eval(qrels, postings_encoding = VBEPostings, scoring = "tfidf", index_method
     postings_encoding : class
         Postings encoding class (e.g., VBEPostings, EliasGammaPostings)
     scoring : str
-        Scoring method: "tfidf", "bm25", "bm25_alt2", or "bm25_alt3"
+        Scoring method: "tfidf", "bm25", "bm25_alt2", "bm25_alt3", "wand_bm25", or "lsi"
     index_method : str
         Index construction method: "bsbi" or "spimi"
     dict_type : str
@@ -169,29 +169,37 @@ def eval(qrels, postings_encoding = VBEPostings, scoring = "tfidf", index_method
         Path to the file containing queries
     k : int
         Number of top documents to retrieve per query
+    lsi_n_components : int
+        Number of LSI components (only used when scoring="lsi")
   """
-  method_dir = f"{index_method}_fst" if dict_type == "fst" else index_method
-  if index_method == "spimi":
-      from spimi import SPIMIIndex
-      instance = SPIMIIndex(data_dir = 'collection',
-                            postings_encoding = postings_encoding,
-                            output_dir = os.path.join('index', method_dir, postings_encoding.name),
-                            tmp_dir = os.path.join('tmp', method_dir, postings_encoding.name),
-                            dict_type = dict_type)
+  if scoring == "lsi":
+      from lsi import LSIIndex
+      lsi_dir = f'index/lsi_{lsi_n_components}' if lsi_n_components != 100 else 'index/lsi'
+      lsi_instance = LSIIndex(n_components=lsi_n_components, output_dir=lsi_dir)
+      retrieve_fn = lsi_instance.retrieve
   else:
-      instance = BSBIIndex(data_dir = 'collection',
-                           postings_encoding = postings_encoding,
-                           output_dir = os.path.join('index', method_dir, postings_encoding.name),
-                           tmp_dir = os.path.join('tmp', method_dir, postings_encoding.name),
-                           dict_type = dict_type)
+      method_dir = f"{index_method}_fst" if dict_type == "fst" else index_method
+      if index_method == "spimi":
+          from spimi import SPIMIIndex
+          instance = SPIMIIndex(data_dir = 'collection',
+                                postings_encoding = postings_encoding,
+                                output_dir = os.path.join('index', method_dir, postings_encoding.name),
+                                tmp_dir = os.path.join('tmp', method_dir, postings_encoding.name),
+                                dict_type = dict_type)
+      else:
+          instance = BSBIIndex(data_dir = 'collection',
+                               postings_encoding = postings_encoding,
+                               output_dir = os.path.join('index', method_dir, postings_encoding.name),
+                               tmp_dir = os.path.join('tmp', method_dir, postings_encoding.name),
+                               dict_type = dict_type)
 
-  retrieve_fn = {
-      "tfidf": instance.retrieve_tfidf,
-      "bm25": instance.retrieve_bm25,
-      "bm25_alt2": instance.retrieve_bm25_alt2,
-      "bm25_alt3": instance.retrieve_bm25_alt3,
-      "wand_bm25": instance.retrieve_wand_bm25,
-  }[scoring]
+      retrieve_fn = {
+          "tfidf": instance.retrieve_tfidf,
+          "bm25": instance.retrieve_bm25,
+          "bm25_alt2": instance.retrieve_bm25_alt2,
+          "bm25_alt3": instance.retrieve_bm25_alt3,
+          "wand_bm25": instance.retrieve_wand_bm25,
+      }[scoring]
 
   with open(query_file) as file:
     rbp_scores = []
@@ -236,3 +244,7 @@ if __name__ == '__main__':
         print(f"\n===== Evaluation using {index_method.upper()}{dict_label} + {postings_encoding.__name__} =====")
         for scoring in ["tfidf", "bm25", "bm25_alt2", "bm25_alt3", "wand_bm25"]:
           eval(qrels, postings_encoding, scoring=scoring, index_method=index_method, dict_type=dict_type)
+
+  # LSI + FAISS evaluation
+  print(f"\n===== Evaluation using LSI + FAISS (HNSW, k=100) =====")
+  eval(qrels, scoring="lsi", lsi_n_components=100)

@@ -38,3 +38,15 @@ for dict_type in ["idmap", "fst"]:
                     print(f"  {doc:30} {score:>.3f}")
                 print()
             print()
+
+# LSI + FAISS (HNSW) retrieval
+from lsi import LSIIndex
+lsi = LSIIndex(n_components=100, output_dir='index/lsi')
+print("===== LSI + FAISS (HNSW, k=100) =====")
+for query in queries:
+    print("Query  : ", query)
+    print("Results:")
+    for (score, doc) in lsi.retrieve(query, k = 10):
+        print(f"  {doc:30} {score:>.3f}")
+    print()
+print()

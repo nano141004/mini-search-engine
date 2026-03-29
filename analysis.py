@@ -127,6 +127,21 @@ CONFIGURATIONS = [
         "postings_encoding": EliasGammaPostings,
         "scoring": "wand_bm25",
     },
+    # LSI + FAISS (HNSW) configurations
+    {
+        "name": "LSI (k=100) + FAISS HNSW",
+        "index_method": "lsi",
+        "postings_encoding": VBEPostings,
+        "scoring": "lsi",
+        "n_components": 100,
+    },
+    {
+        "name": "LSI (k=200) + FAISS HNSW",
+        "index_method": "lsi",
+        "postings_encoding": VBEPostings,
+        "scoring": "lsi",
+        "n_components": 200,
+    },
 ]
 
 
@@ -134,7 +149,7 @@ CONFIGURATIONS = [
 
 def get_index_instance(config):
     """
-    Create a BSBIIndex or SPIMIIndex instance from a configuration dict.
+    Create a BSBIIndex, SPIMIIndex, or LSIIndex instance from a configuration dict.
     If the index does not exist yet, it will be built automatically.
 
     Parameters
@@ -144,11 +159,39 @@ def get_index_instance(config):
 
     Returns
     -------
-    BSBIIndex or SPIMIIndex
+    BSBIIndex, SPIMIIndex, or LSIIndex
         A configured index instance (with index built if needed)
     """
-    enc = config["postings_encoding"]
     method = config["index_method"]
+
+    if method == "lsi":
+        from lsi import LSIIndex
+        n_comp = config.get("n_components", 100)
+        lsi_dir = f'index/lsi_{n_comp}' if n_comp != 100 else 'index/lsi'
+        instance = LSIIndex(n_components=n_comp, output_dir=lsi_dir)
+        build_key = f"lsi_{n_comp}"
+        if build_key not in _built_indices:
+            # LSI needs a source inverted index; build BSBI+VBE if needed
+            enc = config["postings_encoding"]
+            source = BSBIIndex(
+                data_dir="collection", postings_encoding=enc,
+                output_dir=os.path.join("index", "bsbi", enc.name),
+                tmp_dir=os.path.join("tmp", "bsbi", enc.name),
+            )
+            source_key = f"bsbi_{enc.name}"
+            if source_key not in _built_indices:
+                print(f"  Building source index for bsbi/{enc.name}...")
+                s0 = time.perf_counter()
+                source.index()
+                _built_indices[source_key] = time.perf_counter() - s0
+
+            print(f"  Building LSI index (k={n_comp})...")
+            start = time.perf_counter()
+            instance.build(source)
+            _built_indices[build_key] = time.perf_counter() - start
+        return instance
+
+    enc = config["postings_encoding"]
     dict_type = config.get("dict_type", "idmap")
     method_dir = f"{method}_fst" if dict_type == "fst" else method
 
@@ -187,12 +230,12 @@ def retrieve(instance, query, scoring, k=10):
 
     Parameters
     ----------
-    instance : BSBIIndex or SPIMIIndex
+    instance : BSBIIndex, SPIMIIndex, or LSIIndex
         The index to search
     query : str
         The query string
     scoring : str
-        The scoring method identifier (e.g., "tfidf", "bm25")
+        The scoring method identifier (e.g., "tfidf", "bm25", "lsi")
     k : int
         Number of top results to return
 
@@ -201,7 +244,9 @@ def retrieve(instance, query, scoring, k=10):
     List[Tuple[float, str]]
         Top-K results as (score, doc_path) tuples
     """
-    if scoring == "tfidf":
+    if scoring == "lsi":
+        return instance.retrieve(query, k=k)
+    elif scoring == "tfidf":
         return instance.retrieve_tfidf(query, k=k)
     elif scoring == "bm25":
         return instance.retrieve_bm25(query, k=k)
@@ -237,15 +282,25 @@ def compare_build_times(configs):
     results = []
     for config in configs:
         get_index_instance(config)
-        dict_type = config.get("dict_type", "idmap")
-        method_dir = f"{config['index_method']}_fst" if dict_type == "fst" else config["index_method"]
-        build_key = f"{method_dir}_{config['postings_encoding'].name}"
-        if build_key not in seen:
-            seen.add(build_key)
-            dict_label = " + FST" if dict_type == "fst" else ""
-            label = f"{config['index_method'].upper()}{dict_label} + {config['postings_encoding'].__name__}"
-            elapsed = _built_indices.get(build_key, 0.0)
-            results.append((label, elapsed))
+        method = config["index_method"]
+        if method == "lsi":
+            n_comp = config.get("n_components", 100)
+            build_key = f"lsi_{n_comp}"
+            if build_key not in seen:
+                seen.add(build_key)
+                label = f"LSI (k={n_comp}) + FAISS HNSW"
+                elapsed = _built_indices.get(build_key, 0.0)
+                results.append((label, elapsed))
+        else:
+            dict_type = config.get("dict_type", "idmap")
+            method_dir = f"{method}_fst" if dict_type == "fst" else method
+            build_key = f"{method_dir}_{config['postings_encoding'].name}"
+            if build_key not in seen:
+                seen.add(build_key)
+                dict_label = " + FST" if dict_type == "fst" else ""
+                label = f"{method.upper()}{dict_label} + {config['postings_encoding'].__name__}"
+                elapsed = _built_indices.get(build_key, 0.0)
+                results.append((label, elapsed))
 
     min_time = min(t for _, t in results) if results else 1.0
 
@@ -285,8 +340,13 @@ def measure_index_size(config):
     # Ensure index is built
     get_index_instance(config)
 
-    enc = config["postings_encoding"]
     method = config["index_method"]
+    if method == "lsi":
+        n_comp = config.get("n_components", 100)
+        lsi_dir = f'index/lsi_{n_comp}' if n_comp != 100 else 'index/lsi'
+        return dir_size(lsi_dir), 0
+
+    enc = config["postings_encoding"]
     dict_type = config.get("dict_type", "idmap")
     method_dir = f"{method}_fst" if dict_type == "fst" else method
     index_dir = os.path.join("index", method_dir, enc.name)
@@ -315,16 +375,27 @@ def compare_index_sizes(configs):
     seen = set()
     results = []
     for config in configs:
-        dict_type = config.get("dict_type", "idmap")
-        method_dir = f"{config['index_method']}_fst" if dict_type == "fst" else config["index_method"]
-        build_key = f"{method_dir}_{config['postings_encoding'].name}"
-        if build_key in seen:
-            continue
-        seen.add(build_key)
-        final_size, tmp_size = measure_index_size(config)
-        dict_label = " + FST" if dict_type == "fst" else ""
-        label = f"{config['index_method'].upper()}{dict_label} + {config['postings_encoding'].__name__}"
-        results.append((label, final_size, tmp_size))
+        method = config["index_method"]
+        if method == "lsi":
+            n_comp = config.get("n_components", 100)
+            build_key = f"lsi_{n_comp}"
+            if build_key in seen:
+                continue
+            seen.add(build_key)
+            final_size, tmp_size = measure_index_size(config)
+            label = f"LSI (k={n_comp}) + FAISS HNSW"
+            results.append((label, final_size, tmp_size))
+        else:
+            dict_type = config.get("dict_type", "idmap")
+            method_dir = f"{method}_fst" if dict_type == "fst" else method
+            build_key = f"{method_dir}_{config['postings_encoding'].name}"
+            if build_key in seen:
+                continue
+            seen.add(build_key)
+            final_size, tmp_size = measure_index_size(config)
+            dict_label = " + FST" if dict_type == "fst" else ""
+            label = f"{method.upper()}{dict_label} + {config['postings_encoding'].__name__}"
+            results.append((label, final_size, tmp_size))
 
     min_final = min(f for _, f, _ in results)
     min_tmp = min(t for _, _, t in results) if any(t > 0 for _, _, t in results) else 1
