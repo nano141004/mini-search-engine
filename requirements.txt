@@ -1,0 +1,7 @@
+# Search engine project dependencies
+# Base (indexing, compression, evaluation)
+tqdm
+# LSI + FAISS (vector-based retrieval)
+numpy
+scipy
+faiss-cpu
