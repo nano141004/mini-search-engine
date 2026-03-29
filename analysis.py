@@ -223,10 +223,18 @@ def compare_build_times(configs):
 
 # 2. Index size comparison (on disk)
 
+def dir_size(path):
+    """Sum the sizes of all files in a directory (non-recursive)."""
+    total = 0
+    if os.path.isdir(path):
+        for f in os.listdir(path):
+            total += os.path.getsize(os.path.join(path, f))
+    return total
+
 def measure_index_size(config):
     """
     Measure total index size on disk for a configuration.
-    Sums the sizes of all files in the output directory.
+    Returns both the final index size and the intermediate (tmp) size.
 
     Parameters
     ----------
@@ -235,8 +243,8 @@ def measure_index_size(config):
 
     Returns
     -------
-    int
-        Total size in bytes
+    tuple(int, int)
+        (final index size in bytes, tmp intermediate size in bytes)
     """
     # Ensure index is built
     get_index_instance(config)
@@ -244,37 +252,49 @@ def measure_index_size(config):
     enc = config["postings_encoding"]
     method = config["index_method"]
     index_dir = os.path.join("index", method, enc.name)
-    total = 0
-    for f in os.listdir(index_dir):
-        total += os.path.getsize(os.path.join(index_dir, f))
-    return total
+    tmp_dir = os.path.join("tmp", method, enc.name)
+    return dir_size(index_dir), dir_size(tmp_dir)
 
 def compare_index_sizes(configs):
     """
     Print a table comparing index sizes across configurations.
+    Shows both the final index size and intermediate (tmp) size,
+    since SPIMI's pickle intermediates are larger than BSBI's
+    compressed intermediates.
+
+    Size depends only on (index_method, encoding), not scoring,
+    so duplicate rows are collapsed.
 
     Parameters
     ----------
     configs : List[dict]
         List of configuration dictionaries
     """
-    print("=" * 60)
+    print("=" * 80)
     print("2. INDEX SIZE COMPARISON")
-    print("=" * 60)
+    print("=" * 80)
 
+    seen = set()
     results = []
     for config in configs:
-        size = measure_index_size(config)
-        results.append((config["name"], size))
+        build_key = f"{config['index_method']}_{config['postings_encoding'].name}"
+        if build_key in seen:
+            continue
+        seen.add(build_key)
+        final_size, tmp_size = measure_index_size(config)
+        label = f"{config['index_method'].upper()} + {config['postings_encoding'].__name__}"
+        results.append((label, final_size, tmp_size))
 
-    # find the smallest for relative comparison
-    min_size = min(size for _, size in results)
+    min_final = min(f for _, f, _ in results)
+    min_tmp = min(t for _, _, t in results) if any(t > 0 for _, _, t in results) else 1
 
-    print(f"  {'Configuration':<40} {'Size':>10} {'Relative':>10}")
-    print(f"  {'-'*40} {'-'*10} {'-'*10}")
-    for name, size in results:
-        relative = size / min_size
-        print(f"  {name:<40} {size:>8} B  {relative:>9.2f}x")
+    print(f"  {'Configuration':<35} {'Final':>10} {'Rel':>7} {'Tmp (intermediate)':>18} {'Rel':>7} {'Total':>10}")
+    print(f"  {'-'*35} {'-'*10} {'-'*7} {'-'*18} {'-'*7} {'-'*10}")
+    for name, final, tmp in results:
+        rel_f = final / min_final
+        rel_t = tmp / min_tmp if min_tmp > 0 else 0
+        total = final + tmp
+        print(f"  {name:<35} {final:>8} B {rel_f:>6.2f}x {tmp:>16} B {rel_t:>6.2f}x {total:>8} B")
     print()
 
 
